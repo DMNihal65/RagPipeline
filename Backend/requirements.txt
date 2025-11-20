@@ -1,6 +1,9 @@
 fastapi
 uvicorn
 pymupdf
+fastapi
+uvicorn
+pymupdf
 sentence-transformers
 numpy
 python-dotenv
@@ -8,3 +11,6 @@ requests
 chromadb 
 groq
 python-multipart
+passlib[argon2]
+python-jose[cryptography]
+argon2-cffi

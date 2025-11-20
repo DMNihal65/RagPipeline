@@ -1,232 +1,316 @@
-import { useState, useRef, useEffect } from 'react';
-import { askQuestion } from './lib/api';
-import { Send, RotateCcw, Sparkles } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import ChatMessage from './ChatMessage';
-import { Card } from '@/components/ui/card';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import React, { useState, useRef, useEffect } from 'react';
+import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
+import { Send, Upload, FileText, LogOut, ChevronRight, MessageSquare, Plus, X } from 'lucide-react';
+import PDFViewer from './PDFViewer';
 
-export default function ChatInterface({ pdfFile, onCitationsChange, isMobile }) {
+const ChatInterface = () => {
+  const { token, logout, user } = useAuth();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const scrollRef = useRef(null);
-  const scrollAreaRef = useRef(null);
-  const [copiedId, setCopiedId] = useState(null);
+  const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [activePdf, setActivePdf] = useState(null); // For viewing
+  const [activeDocId, setActiveDocId] = useState(null); // For chatting
+  const [activePage, setActivePage] = useState(1);
+  const [documents, setDocuments] = useState([]);
+  const messagesEndRef = useRef(null);
 
-  // Auto-scroll to bottom when messages change
   useEffect(() => {
-    if (scrollRef.current) {
-      setTimeout(() => {
-        scrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-      }, 0);
+    fetchDocuments();
+  }, []);
+
+  const fetchDocuments = async () => {
+    try {
+      const response = await axios.get('http://localhost:6569/documents', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setDocuments(response.data);
+    } catch (error) {
+      console.error("Failed to fetch documents", error);
     }
-  }, [messages, loading]);
+  };
 
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
 
-    if (!input.trim() || loading) return;
+  const handleFileChange = (e) => {
+    if (e.target.files[0]) {
+      setFile(e.target.files[0]);
+    }
+  };
 
-    const userMessage = input.trim();
-    setInput('');
-
-    // Add user message to state
-    const userMessageObj = {
-      id: Date.now(),
-      role: 'user',
-      content: userMessage,
-    };
-    setMessages((prev) => [...prev, userMessageObj]);
-
-    setLoading(true);
+  const handleUpload = async () => {
+    if (!file) return;
+    setUploading(true);
+    const formData = new FormData();
+    formData.append('file', file);
 
     try {
-      // Call API
-      const response = await askQuestion(userMessage);
+      const response = await axios.post('http://localhost:6569/ingest', formData, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
 
-      // Extract answer and citations from API response
-      // Handle different response formats
-      let answer = '';
-      let citations = [];
+      // Refresh doc list and select the new doc
+      await fetchDocuments();
+      setActiveDocId(response.data.doc_id);
+      setActivePdf(file); // View it immediately
 
-      if (response?.response?.answer) {
-        answer = response.response.answer;
-        citations = response.response.citations || [];
-      } else if (response?.answer) {
-        answer = response.answer;
-        citations = response.citations || [];
-      } else {
-        // Fallback if response structure is different
-        answer = JSON.stringify(response);
-      }
-
-      // Create assistant message object
-      const assistantMessageObj = {
-        id: Date.now() + 1,
-        role: 'assistant',
-        content: answer,
-        citations: citations,
-      };
-
-      // Add assistant message
-      setMessages((prev) => [...prev, assistantMessageObj]);
-
-      // Update highlights in parent component
-      if (citations.length > 0) {
-        onCitationsChange(citations);
-      }
+      setMessages(prev => [...prev, {
+        role: 'system',
+        content: `File "${file.name}" processed successfully. You are now chatting with this document.`
+      }]);
+      setFile(null);
     } catch (error) {
-      console.error('Chat error:', error);
-
-      // Add error message
-      const errorMessageObj = {
-        id: Date.now() + 2,
-        role: 'error',
-        content: error?.message || 'Failed to get response. Please try again.',
-      };
-      setMessages((prev) => [...prev, errorMessageObj]);
+      console.error("Upload failed", error);
+      setMessages(prev => [...prev, { role: 'system', content: 'Failed to upload file.' }]);
     } finally {
-      setLoading(false);
+      setUploading(false);
     }
   };
 
-  const handleCopy = (content, id) => {
-    navigator.clipboard.writeText(content).then(() => {
-      setCopiedId(id);
-      setTimeout(() => setCopiedId(null), 2000);
-    });
-  };
+  const handleSend = async () => {
+    if (!input.trim()) return;
 
-  const handleClearChat = () => {
-    setMessages([]);
+    const userMessage = { role: 'user', content: input };
+    setMessages(prev => [...prev, userMessage]);
     setInput('');
-    onCitationsChange([]);
+
+    try {
+      const params = { question: userMessage.content };
+      if (activeDocId) {
+        params.doc_id = activeDocId;
+      }
+
+      const response = await axios.post('http://localhost:6569/query', null, {
+        params: params,
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      const botMessage = {
+        role: 'assistant',
+        content: response.data.response.answer,
+        citations: response.data.response.citations
+      };
+
+      setMessages(prev => [...prev, botMessage]);
+      scrollToBottom();
+    } catch (error) {
+      console.error("Query failed", error);
+      setMessages(prev => [...prev, { role: 'system', content: 'Failed to get response.' }]);
+    }
   };
 
-  const suggestedQuestions = [
-    'What is the main topic of this document?',
-    'Can you summarize the key points?',
-    'What are the important conclusions?',
-  ];
+  const handleCitationClick = (page) => {
+    setActivePage(page);
+  };
+
+  const selectDocument = async (doc) => {
+    setActiveDocId(doc.id);
+
+    try {
+      const response = await axios.get(`http://localhost:6569/documents/${doc.id}/file`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        responseType: 'blob'
+      });
+
+      const pdfUrl = URL.createObjectURL(response.data);
+      // Create a file-like object for the viewer
+      const fileObj = new File([response.data], doc.filename, { type: 'application/pdf' });
+      setActivePdf(fileObj);
+
+      setMessages(prev => [...prev, {
+        role: 'system',
+        content: `Switched context to "${doc.filename}".`
+      }]);
+    } catch (error) {
+      console.error("Failed to load PDF", error);
+      setMessages(prev => [...prev, { role: 'system', content: `Failed to load PDF for "${doc.filename}".` }]);
+    }
+  };
 
   return (
-    <div className='h-full min-h-0 flex flex-col bg-white dark:bg-slate-900'>
-      {/* Header */}
-      <div className='border-b bg-white dark:bg-slate-900 px-4 py-4 shrink-0'>
-        <div className='flex items-center justify-between'>
-          <div>
-            <h2 className='font-semibold text-slate-900 dark:text-white flex items-center gap-2'>
-              <Sparkles size={18} className='text-slate-700 dark:text-slate-300' />
-              Chat with PDF
-            </h2>
-            <p className='text-xs text-slate-500 dark:text-slate-400 mt-1'>
-              Ask questions about your document
-            </p>
+    <div className="flex h-screen bg-white text-stone-800 overflow-hidden font-sans">
+      {/* Sidebar */}
+      <div className="w-64 bg-stone-50 border-r border-stone-200 flex flex-col">
+        <div className="p-4 flex items-center gap-2 border-b border-stone-200">
+          <div className="flex items-center gap-2 bg-slate-900 rounded-lg"><img src="./logo.png" className="w-8 h-8" alt="" /></div>
+
+          <h1 className="text-lg font-bold text-stone-800 tracking-tight">Custom AI Chatbot</h1>
+          {/* <p className="text-xs text-stone-500 mt-0.5 font-medium">Logged in as {user?.username}</p> */}
+        </div>
+
+        <div className="p-3 flex-1 overflow-y-auto">
+          <div className="mb-6">
+            <h3 className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2 pl-2">Upload Document</h3>
+            <div className="flex flex-col gap-2">
+              <input
+                type="file"
+                accept=".pdf"
+                onChange={handleFileChange}
+                className="hidden"
+                id="file-upload"
+              />
+              <label
+                htmlFor="file-upload"
+                className="flex items-center justify-center px-3 py-2 bg-white hover:bg-stone-100 rounded-lg cursor-pointer transition-all border border-stone-200 hover:border-stone-300 text-xs text-stone-600 shadow-sm group"
+              >
+                <Plus size={14} strokeWidth={2} className="mr-2 text-stone-400 group-hover:text-stone-600 transition-colors" />
+                {file ? <span className="font-medium text-stone-900">{file.name.substring(0, 15)}...</span> : 'Select PDF'}
+              </label>
+              <button
+                onClick={handleUpload}
+                disabled={!file || uploading}
+                className={`flex items-center justify-center px-3 py-2 rounded-lg text-xs font-medium transition-all shadow-sm ${!file || uploading
+                  ? 'bg-stone-100 text-stone-400 cursor-not-allowed'
+                  : 'bg-stone-900 hover:bg-stone-800 text-white'
+                  }`}
+              >
+                {uploading ? 'Uploading...' : <><Upload size={14} strokeWidth={2} className="mr-2" /> Upload PDF</>}
+              </button>
+            </div>
           </div>
-          {messages.length > 0 && (
-            <Button
-              variant='ghost'
-              size='sm'
-              onClick={handleClearChat}
-              className='text-xs'
-            >
-              <RotateCcw size={14} className='mr-1' />
-              Clear
-            </Button>
-          )}
+
+          <div>
+            <h3 className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2 pl-2">Your Documents</h3>
+            <div className="space-y-0.5">
+              <button
+                onClick={() => { setActiveDocId(null); setMessages(prev => [...prev, { role: 'system', content: 'Switched to All Documents context.' }]); }}
+                className={`w-full flex items-center px-3 py-2 rounded-lg text-xs transition-all ${activeDocId === null
+                  ? 'bg-white text-teal-700 shadow-sm border border-stone-200 font-semibold'
+                  : 'text-stone-500 hover:bg-stone-100 hover:text-stone-700'
+                  }`}
+              >
+                <MessageSquare size={14} strokeWidth={2} className={`mr-2.5 ${activeDocId === null ? 'text-teal-600' : 'text-stone-400'}`} />
+                All Documents
+              </button>
+              {documents.map(doc => (
+                <button
+                  key={doc.id}
+                  onClick={() => selectDocument(doc)}
+                  className={`w-full flex items-center px-3 py-2 rounded-lg text-xs transition-all ${activeDocId === doc.id
+                    ? 'bg-white text-teal-700 shadow-sm border border-stone-200 font-semibold'
+                    : 'text-stone-500 hover:bg-stone-100 hover:text-stone-700'
+                    }`}
+                >
+                  <FileText size={14} strokeWidth={2} className={`mr-2.5 ${activeDocId === doc.id ? 'text-teal-600' : 'text-stone-400'}`} />
+                  <span className="truncate text-left">{doc.filename}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="p-3 border-t border-stone-200 bg-stone-50/50">
+          <button
+            onClick={logout}
+            className="flex items-center w-full px-3 py-2 text-xs text-stone-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+          >
+            <LogOut size={14} strokeWidth={2} className="mr-2" /> Sign Out
+          </button>
         </div>
       </div>
 
-      {/* Messages Area */}
-      <ScrollArea className='flex-1 min-h-0 px-4 py-4' ref={scrollAreaRef}>
-        <div className='space-y-4 max-w-3xl pr-4'>
-          {messages.length === 0 ? (
-            <div className='h-full flex flex-col items-center justify-center py-12 text-center'>
-              <div className='inline-flex items-center justify-center h-16 w-16 rounded-full bg-slate-100 dark:bg-slate-800 mb-4'>
-                <Sparkles size={32} className='text-slate-700 dark:text-slate-300' />
-              </div>
-              <h3 className='text-lg font-semibold text-slate-900 dark:text-white mb-2'>
-                Start Your Conversation
-              </h3>
-              <p className='text-sm text-slate-600 dark:text-slate-400 mb-6 max-w-xs'>
-                Ask questions about your document and get intelligent answers powered by RAG
-              </p>
-
-              <div className='space-y-2 w-full max-w-sm'>
-                <p className='text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide'>
-                  Suggested Questions
-                </p>
-                {suggestedQuestions.map((question, index) => (
-                  <button
-                    key={index}
-                    onClick={() => setInput(question)}
-                    className='w-full text-left p-3 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-sm text-slate-700 dark:text-slate-300'
-                  >
-                    {question}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <>
-              {messages.map((message) => (
-                <ChatMessage
-                  key={message.id}
-                  message={message}
-                  onCopy={handleCopy}
-                  isCopied={copiedId === message.id}
-                />
-              ))}
-              {loading && (
-                <div className='flex justify-start'>
-                  <Card className='bg-blue-50 dark:bg-blue-950 border-0'>
-                    <div className='px-4 py-3 flex items-center gap-2'>
-                      <div className='h-4 w-4 bg-blue-500 rounded-full animate-bounce' />
-                      <p className='text-sm text-blue-900 dark:text-blue-100'>
-                        Thinking...
-                      </p>
-                    </div>
-                  </Card>
+      {/* Main Content */}
+      <div className="flex-1 flex relative">
+        {/* Chat Area */}
+        <div className={`flex-1 flex flex-col ${activePdf ? 'w-1/2' : 'w-full'} transition-all duration-500 ease-in-out`}>
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            {messages.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-full text-stone-400">
+                <div className="w-16 h-16 bg-stone-50 rounded-full mb-4 flex items-center justify-center border border-stone-100">
+                  <MessageSquare size={24} strokeWidth={1.5} className="text-stone-300" />
                 </div>
-              )}
-              <div ref={scrollRef} />
-            </>
-          )}
-        </div>
-      </ScrollArea>
+                <p className="text-base font-medium text-stone-600">Welcome to RAG Chatbot</p>
+                <p className="text-xs mt-1">Select a document or upload a PDF to start chatting</p>
+              </div>
+            )}
 
-      {/* Input Area */}
-      <div className='border-t bg-white dark:bg-slate-900 p-4 shrink-0'>
-        <form onSubmit={handleSendMessage} className='space-y-3'>
-          <div className='flex gap-2 items-stretch flex-nowrap'>
-            <Input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder='Ask a question...'
-              disabled={loading}
-              className='text-sm flex-1 min-w-0'
-              autoFocus
-            />
-            <Button
-              type='submit'
-              disabled={loading || !input.trim()}
-              size='sm'
-              className='px-4 bg-slate-900 text-white hover:bg-slate-800 shrink-0'
-            >
-              {loading ? (
-                <div className='h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin' />
-              ) : (
-                <Send size={16} />
-              )}
-            </Button>
+            {messages.map((msg, idx) => (
+              <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  className={`max-w-[85%] px-4 py-3 rounded-xl shadow-sm ${msg.role === 'user'
+                    ? 'bg-stone-900 text-white rounded-tr-sm'
+                    : msg.role === 'system'
+                      ? 'bg-stone-50 text-stone-500 text-xs border border-stone-100 w-full text-center py-1.5'
+                      : 'bg-white text-stone-800 rounded-tl-sm border border-stone-200'
+                    }`}
+                >
+                  <p className="leading-relaxed whitespace-pre-wrap text-sm">{msg.content}</p>
+
+                  {msg.citations && msg.citations.length > 0 && (
+                    <div className="mt-3 pt-2 border-t border-stone-100/50">
+                      <p className="text-[10px] font-bold text-stone-400 mb-2 uppercase tracking-widest">Sources</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {msg.citations.map((cit, cIdx) => (
+                          <button
+                            key={cIdx}
+                            onClick={() => handleCitationClick(cit.page)}
+                            className="flex items-center px-2 py-1 bg-stone-50 hover:bg-stone-100 border border-stone-200 rounded text-[10px] text-stone-600 transition-all hover:border-stone-300"
+                          >
+                            <span className="font-medium">Page {cit.page}</span>
+                            <ChevronRight size={10} className="ml-0.5 text-stone-400" />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
           </div>
-          <p className='text-xs text-slate-500 dark:text-slate-400'>
-            Powered by RAG • Get accurate answers from your document
-          </p>
-        </form>
+
+          <div className="p-4 bg-white/80 backdrop-blur-sm border-t border-stone-100">
+            <div className="max-w-3xl mx-auto flex items-center gap-2 bg-white rounded-xl p-1.5 border border-stone-200 focus-within:border-stone-300 focus-within:ring-2 focus-within:ring-stone-50 transition-all shadow-sm">
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                placeholder="Ask a question..."
+                className="flex-1 bg-transparent border-none outline-none text-sm text-stone-900 px-3 py-1.5 placeholder:text-stone-400"
+              />
+              <button
+                onClick={handleSend}
+                disabled={!input.trim()}
+                className="p-2 bg-stone-900 hover:bg-stone-800 text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed shadow-sm hover:shadow"
+              >
+                <Send size={16} strokeWidth={2} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* PDF Viewer Panel */}
+        {activePdf && (
+          <div className="w-1/2 border-l border-stone-200 bg-stone-50 flex flex-col shadow-xl z-10">
+            <div className="p-3 border-b border-stone-200 flex justify-between items-center bg-white">
+              <div className="flex items-center gap-2 overflow-hidden">
+                <div className="p-1 bg-red-50 rounded">
+                  <FileText size={14} className="text-red-500" />
+                </div>
+                <span className="text-xs font-semibold text-stone-700 truncate">{activePdf.name}</span>
+              </div>
+              <button
+                onClick={() => setActivePdf(null)}
+                className="p-1.5 hover:bg-stone-100 rounded-full text-stone-400 hover:text-stone-600 transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden relative bg-stone-100/50">
+              <PDFViewer file={activePdf} pageNumber={activePage} />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
-}
+};
+
+export default ChatInterface;

@@ -1,17 +1,15 @@
 @import "tailwindcss";
 
-@font-face {
-  font-family: "DM Sans";
-  src: url("/DMSans-VariableFont_opsz,wght.ttf") format("truetype");
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
+body {
+  background-color: #ffffff;
+  color: #0f172a;
+  /* slate-900 */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-@font-face {
-  font-family: "DM Sans";
-  src: url("/DMSans-Italic-VariableFont_opsz,wght.ttf") format("truetype");
-  font-weight: 100 900;
-  font-style: italic;
-  font-display: swap;
+#root {
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
 }

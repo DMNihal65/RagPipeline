@@ -30,7 +30,7 @@ def chunk_text(text, chunk_size=800):
     for i in range(0, len(words), chunk_size):
         yield " ".join(words[i:i + chunk_size])
 
-def store_chunks(pages):
+def store_chunks(pages, user_id, doc_id):
     ids = []
     docs = []
     embeddings = []
@@ -39,9 +39,9 @@ def store_chunks(pages):
     counter = 0
     for p in pages:
         for chunk in chunk_text(p["text"]):
-            ids.append(f"id_{counter}")
+            ids.append(f"user_{user_id}_doc_{doc_id}_id_{counter}")
             docs.append(chunk)
-            metadata.append({"page": p["page"]})
+            metadata.append({"page": p["page"], "user_id": user_id, "doc_id": doc_id})
             counter += 1
 
     embeddings = embed(docs)
@@ -53,15 +53,28 @@ def store_chunks(pages):
         metadatas=metadata
     )
 
-def search_chunks(query, k=5):
+def search_chunks(query, user_id, doc_id=None, k=5):
     query_embedding = embed([query])
+    
+    if doc_id:
+        where_clause = {
+            "$and": [
+                {"user_id": user_id},
+                {"doc_id": doc_id}
+            ]
+        }
+    else:
+        where_clause = {"user_id": user_id}
+
     results = collection.query(
         query_embeddings=query_embedding,
-        n_results=k
+        n_results=k,
+        where=where_clause
     )
 
     chunks = []
-    for t, m in zip(results["documents"][0], results["metadatas"][0]):
-        chunks.append({"text": t, "page": m["page"]})
+    if results["documents"]:
+        for t, m in zip(results["documents"][0], results["metadatas"][0]):
+            chunks.append({"text": t, "page": m["page"]})
 
     return chunks

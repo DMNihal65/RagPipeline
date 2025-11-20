@@ -1,226 +1,71 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
-import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Highlighter } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import 'react-pdf/dist/Page/AnnotationLayer.css';
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import "react-pdf/dist/Page/AnnotationLayer.css";
+import "react-pdf/dist/Page/TextLayer.css";
 
-pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+// Set worker source
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString();
 
-export default function PDFViewer({ file, highlights }) {
+const PDFViewer = ({ file, pageNumber }) => {
   const [numPages, setNumPages] = useState(null);
-  const [pageNumber, setPageNumber] = useState(1);
-  const [scale, setScale] = useState(1.2);
-  const [loading, setLoading] = useState(true);
-  const [highlightedPages, setHighlightedPages] = useState(new Set());
-  const [citationPages, setCitationPages] = useState([]);
-  const [citationIndex, setCitationIndex] = useState(0);
+  const [containerWidth, setContainerWidth] = useState(null);
 
-  // Extract highlighted page numbers from citations
-  useEffect(() => {
-    if (highlights && highlights.length > 0) {
-      const pages = new Set(highlights.map((h) => h.page));
-      setHighlightedPages(pages);
-      const ordered = Array.from(pages).sort((a, b) => a - b);
-      setCitationPages(ordered);
-      setCitationIndex(0);
-    }
-  }, [highlights]);
-
-  const onDocumentLoadSuccess = ({ numPages }) => {
+  function onDocumentLoadSuccess({ numPages }) {
     setNumPages(numPages);
-    setLoading(false);
-  };
-
-  const handlePreviousPage = () => {
-    setPageNumber((prev) => Math.max(prev - 1, 1));
-  };
-
-  const handleNextPage = () => {
-    setPageNumber((prev) => Math.min(prev + 1, numPages));
-  };
-
-  const handleZoomIn = () => {
-    setScale((prev) => Math.min(prev + 0.2, 2));
-  };
-
-  const handleZoomOut = () => {
-    setScale((prev) => Math.max(prev - 0.2, 0.8));
-  };
-
-  const handleJumpToHighlight = () => {
-    if (highlightedPages.size > 0) {
-      const firstHighlightedPage = Math.min(...highlightedPages);
-      setPageNumber(firstHighlightedPage);
-    }
-  };
-
-  const handlePrevCitation = () => {
-    if (citationPages.length === 0) return;
-    const nextIndex = (citationIndex - 1 + citationPages.length) % citationPages.length;
-    setCitationIndex(nextIndex);
-    setPageNumber(citationPages[nextIndex]);
-  };
-
-  const handleNextCitation = () => {
-    if (citationPages.length === 0) return;
-    const nextIndex = (citationIndex + 1) % citationPages.length;
-    setCitationIndex(nextIndex);
-    setPageNumber(citationPages[nextIndex]);
-  };
+  }
 
   useEffect(() => {
-    const onJump = (e) => {
-      if (e?.detail?.page) {
-        setPageNumber(e.detail.page);
-        const idx = citationPages.indexOf(e.detail.page);
-        if (idx >= 0) setCitationIndex(idx);
+    const updateWidth = () => {
+      const container = document.getElementById('pdf-container');
+      if (container) {
+        setContainerWidth(container.clientWidth - 48); // Subtract padding (p-6 = 24px * 2)
       }
     };
-    window.addEventListener('rag:jumpToPage', onJump);
-    return () => window.removeEventListener('rag:jumpToPage', onJump);
-  }, [citationPages]);
+
+    window.addEventListener('resize', updateWidth);
+    // Small delay to ensure container is rendered
+    setTimeout(updateWidth, 100);
+
+    return () => window.removeEventListener('resize', updateWidth);
+  }, []);
+
+  // Scroll to page when pageNumber changes
+  useEffect(() => {
+    if (pageNumber) {
+      const pageElement = document.getElementById(`page_${pageNumber}`);
+      if (pageElement) {
+        pageElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  }, [pageNumber]);
 
   return (
-    <div className='h-full flex flex-col bg-white dark:bg-slate-900'>
-      {/* Toolbar */}
-      <div className='flex items-center justify-between px-4 py-3 border-b bg-slate-50 dark:bg-slate-800 gap-2 flex-wrap'>
-        <div className='flex items-center gap-1'>
-          <Button
-            variant='ghost'
-            size='sm'
-            onClick={handlePreviousPage}
-            disabled={pageNumber === 1}
-            className='h-9'
-            title='Previous page'
-          >
-            <ChevronLeft size={18} />
-          </Button>
-
-          <div className='px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-sm font-medium text-slate-900 dark:text-white min-w-fit'>
-            {pageNumber} / {numPages || '...'}
-          </div>
-
-          <Button
-            variant='ghost'
-            size='sm'
-            onClick={handleNextPage}
-            disabled={pageNumber === numPages}
-            className='h-9'
-            title='Next page'
-          >
-            <ChevronRight size={18} />
-          </Button>
-        </div>
-
-        <div className='flex items-center gap-1'>
-          <Button
-            variant='ghost'
-            size='sm'
-            onClick={handleZoomOut}
-            disabled={scale <= 0.8}
-            className='h-9'
-            title='Zoom out'
-          >
-            <ZoomOut size={18} />
-          </Button>
-
-          <div className='px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-sm font-medium text-slate-900 dark:text-white min-w-fit'>
-            {Math.round(scale * 100)}%
-          </div>
-
-          <Button
-            variant='ghost'
-            size='sm'
-            onClick={handleZoomIn}
-            disabled={scale >= 2}
-            className='h-9'
-            title='Zoom in'
-          >
-            <ZoomIn size={18} />
-          </Button>
-
-          {citationPages.length > 0 && (
-            <div className='flex items-center gap-1 ml-2'>
-              <Button
-                variant='ghost'
-                size='sm'
-                onClick={handlePrevCitation}
-                className='h-9'
-                title='Previous citation'
-              >
-                <ChevronLeft size={18} />
-              </Button>
-              <div className='px-2 py-1 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-xs font-medium min-w-16 text-center'>
-                {citationIndex + 1} / {citationPages.length}
-              </div>
-              <Button
-                variant='ghost'
-                size='sm'
-                onClick={handleNextCitation}
-                className='h-9'
-                title='Next citation'
-              >
-                <ChevronRight size={18} />
-              </Button>
-              <Button
-                variant='ghost'
-                size='sm'
-                onClick={handleJumpToHighlight}
-                className='h-9 text-yellow-700 dark:text-yellow-300'
-                title={`Jump to first citation (Page ${citationPages[0]})`}
-              >
-                <Highlighter size={18} />
-              </Button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Citation Info Bar */}
-      {citationPages.length > 0 && (
-        <div className='px-4 py-2 bg-yellow-50 dark:bg-yellow-950/30 border-b border-yellow-200 dark:border-yellow-800 text-xs text-yellow-800 dark:text-yellow-200'>
-          <span className='font-semibold'>Citations:</span>{' '}
-          {citationPages.join(', ')}
-        </div>
-      )}
-
-      {/* PDF Viewer */}
-      <div className='flex-1 overflow-auto flex items-start justify-center bg-slate-50 dark:bg-slate-900 p-4'>
-        <div className='bg-white dark:bg-slate-900 rounded-lg shadow border border-slate-200 dark:border-slate-700 overflow-hidden'>
-          {loading && (
-            <div className='flex items-center justify-center h-96 bg-slate-50 dark:bg-slate-800'>
-              <div className='text-center'>
-                <div className='inline-flex items-center justify-center h-12 w-12 rounded-full bg-slate-200 dark:bg-slate-700 mb-3'>
-                  <div className='h-6 w-6 border-2 border-slate-900 dark:border-white border-t-transparent rounded-full animate-spin' />
-                </div>
-                <p className='text-sm text-slate-600 dark:text-slate-400'>Loading PDF...</p>
-              </div>
-            </div>
-          )}
-
-          <Document
-            file={file}
-            onLoadSuccess={onDocumentLoadSuccess}
-            loading={<div />}
-            error={
-              <div className='p-8 text-center text-red-600 dark:text-red-400'>
-                Failed to load PDF. Please try another file.
-              </div>
-            }
-          >
+    <div id="pdf-container" className="h-full overflow-y-auto p-6 bg-stone-100 flex flex-col items-center scroll-smooth">
+      <Document
+        file={file}
+        onLoadSuccess={onDocumentLoadSuccess}
+        className="flex flex-col gap-6"
+        loading={<div className="text-stone-500 font-medium text-sm animate-pulse">Loading PDF...</div>}
+        error={<div className="text-red-500 font-medium text-sm">Failed to load PDF.</div>}
+      >
+        {Array.from(new Array(numPages), (el, index) => (
+          <div key={`page_${index + 1}`} id={`page_${index + 1}`} className="shadow-sm transition-shadow hover:shadow-md">
             <Page
-              pageNumber={pageNumber}
-              scale={scale}
-              renderTextLayer={false}
+              pageNumber={index + 1}
+              width={containerWidth || 400}
+              renderTextLayer={true}
               renderAnnotationLayer={true}
-              className={`shadow-sm ${
-                highlightedPages.has(pageNumber) ? 'ring-2 ring-yellow-400' : ''
-              }`}
+              className="bg-white"
             />
-          </Document>
-        </div>
-      </div>
+            <div className="text-center text-[10px] text-stone-400 mt-2 font-medium">Page {index + 1}</div>
+          </div>
+        ))}
+      </Document>
     </div>
   );
-}
+};
+
+export default PDFViewer;
