@@ -22,7 +22,7 @@ const ChatInterface = () => {
 
   const fetchDocuments = async () => {
     try {
-      const response = await axios.get('http://localhost:6569/documents', {
+      const response = await axios.get('https://rag.cmti.online/documents', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       setDocuments(response.data);
@@ -48,7 +48,7 @@ const ChatInterface = () => {
     formData.append('file', file);
 
     try {
-      const response = await axios.post('http://localhost:6569/ingest', formData, {
+      const response = await axios.post('https://rag.cmti.online/ingest', formData, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'multipart/form-data'
@@ -86,7 +86,7 @@ const ChatInterface = () => {
         params.doc_id = activeDocId;
       }
 
-      const response = await axios.post('http://localhost:6569/query', null, {
+      const response = await axios.post('https://rag.cmti.online/query', null, {
         params: params,
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -113,7 +113,7 @@ const ChatInterface = () => {
     setActiveDocId(doc.id);
 
     try {
-      const response = await axios.get(`http://localhost:6569/documents/${doc.id}/file`, {
+      const response = await axios.get(`https://rag.cmti.online/documents/${doc.id}/file`, {
         headers: { 'Authorization': `Bearer ${token}` },
         responseType: 'blob'
       });
