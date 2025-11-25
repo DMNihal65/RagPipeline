@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { Send, Upload, FileText, LogOut, ChevronRight, MessageSquare, Plus, X } from 'lucide-react';
+import { Send, Upload, FileText, LogOut, ChevronRight, MessageSquare, Plus, X, Globe, ExternalLink } from 'lucide-react';
 import PDFViewer from './PDFViewer';
 
 const ChatInterface = () => {
@@ -14,6 +14,7 @@ const ChatInterface = () => {
   const [activeDocId, setActiveDocId] = useState(null); // For chatting
   const [activePage, setActivePage] = useState(1);
   const [documents, setDocuments] = useState([]);
+  const [webSearchMode, setWebSearchMode] = useState(false); // Web search toggle
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -22,7 +23,7 @@ const ChatInterface = () => {
 
   const fetchDocuments = async () => {
     try {
-      const response = await axios.get('https://rag.cmti.online/documents', {
+      const response = await axios.get('http://localhost:6568/documents', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       setDocuments(response.data);
@@ -48,7 +49,7 @@ const ChatInterface = () => {
     formData.append('file', file);
 
     try {
-      const response = await axios.post('https://rag.cmti.online/ingest', formData, {
+      const response = await axios.post('http://localhost:6568/ingest', formData, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'multipart/form-data'
@@ -81,20 +82,31 @@ const ChatInterface = () => {
     setInput('');
 
     try {
-      const params = { question: userMessage.content };
-      if (activeDocId) {
-        params.doc_id = activeDocId;
-      }
+      let response;
 
-      const response = await axios.post('https://rag.cmti.online/query', null, {
-        params: params,
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      if (webSearchMode) {
+        // Web search mode
+        response = await axios.post('http://localhost:6568/web-query', null, {
+          params: { question: userMessage.content },
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      } else {
+        // Document search mode
+        const params = { question: userMessage.content };
+        if (activeDocId) {
+          params.doc_id = activeDocId;
+        }
+        response = await axios.post('http://localhost:6568/query', null, {
+          params: params,
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      }
 
       const botMessage = {
         role: 'assistant',
         content: response.data.response.answer,
-        citations: response.data.response.citations
+        citations: response.data.response.citations,
+        isWebSearch: webSearchMode
       };
 
       setMessages(prev => [...prev, botMessage]);
@@ -113,7 +125,7 @@ const ChatInterface = () => {
     setActiveDocId(doc.id);
 
     try {
-      const response = await axios.get(`https://rag.cmti.online/documents/${doc.id}/file`, {
+      const response = await axios.get(`http://localhost:6568/documents/${doc.id}/file`, {
         headers: { 'Authorization': `Bearer ${token}` },
         responseType: 'blob'
       });
@@ -226,7 +238,7 @@ const ChatInterface = () => {
                   <MessageSquare size={24} strokeWidth={1.5} className="text-stone-300" />
                 </div>
                 <p className="text-base font-medium text-stone-600">Welcome to RAG Chatbot</p>
-                <p className="text-xs mt-1">Select a document or upload a PDF to start chatting</p>
+                <p className="text-xs mt-1">Select a document, upload a PDF, or use web search</p>
               </div>
             )}
 
@@ -247,14 +259,30 @@ const ChatInterface = () => {
                       <p className="text-[10px] font-bold text-stone-400 mb-2 uppercase tracking-widest">Sources</p>
                       <div className="flex flex-wrap gap-1.5">
                         {msg.citations.map((cit, cIdx) => (
-                          <button
-                            key={cIdx}
-                            onClick={() => handleCitationClick(cit.page)}
-                            className="flex items-center px-2 py-1 bg-stone-50 hover:bg-stone-100 border border-stone-200 rounded text-[10px] text-stone-600 transition-all hover:border-stone-300"
-                          >
-                            <span className="font-medium">Page {cit.page}</span>
-                            <ChevronRight size={10} className="ml-0.5 text-stone-400" />
-                          </button>
+                          msg.isWebSearch ? (
+                            // Web citation with clickable URL
+                            <a
+                              key={cIdx}
+                              href={cit.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center px-2 py-1 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded text-[10px] text-blue-700 transition-all hover:border-blue-300 group"
+                            >
+                              <Globe size={10} className="mr-1 text-blue-500" />
+                              <span className="font-medium max-w-[150px] truncate">{cit.domain || new URL(cit.url).hostname}</span>
+                              <ExternalLink size={10} className="ml-1 text-blue-400 group-hover:text-blue-600" />
+                            </a>
+                          ) : (
+                            // Document citation with page number
+                            <button
+                              key={cIdx}
+                              onClick={() => handleCitationClick(cit.page)}
+                              className="flex items-center px-2 py-1 bg-stone-50 hover:bg-stone-100 border border-stone-200 rounded text-[10px] text-stone-600 transition-all hover:border-stone-300"
+                            >
+                              <span className="font-medium">Page {cit.page}</span>
+                              <ChevronRight size={10} className="ml-0.5 text-stone-400" />
+                            </button>
+                          )
                         ))}
                       </div>
                     </div>
@@ -266,22 +294,43 @@ const ChatInterface = () => {
           </div>
 
           <div className="p-4 bg-white/80 backdrop-blur-sm border-t border-stone-100">
-            <div className="max-w-3xl mx-auto flex items-center gap-2 bg-white rounded-xl p-1.5 border border-stone-200 focus-within:border-stone-300 focus-within:ring-2 focus-within:ring-stone-50 transition-all shadow-sm">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                placeholder="Ask a question..."
-                className="flex-1 bg-transparent border-none outline-none text-sm text-stone-900 px-3 py-1.5 placeholder:text-stone-400"
-              />
-              <button
-                onClick={handleSend}
-                disabled={!input.trim()}
-                className="p-2 bg-stone-900 hover:bg-stone-800 text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed shadow-sm hover:shadow"
-              >
-                <Send size={16} strokeWidth={2} />
-              </button>
+            <div className="max-w-3xl mx-auto">
+              {webSearchMode && (
+                <div className="mb-2 flex items-center gap-2 text-xs text-blue-600">
+                  <Globe size={14} className="animate-pulse" />
+                  <span className="font-medium">Web Search Mode Active</span>
+                </div>
+              )}
+              <div className={`flex items-center gap-2 bg-white rounded-xl p-1.5 border transition-all shadow-sm ${webSearchMode
+                  ? 'border-blue-300 ring-2 ring-blue-50'
+                  : 'border-stone-200 focus-within:border-stone-300 focus-within:ring-2 focus-within:ring-stone-50'
+                }`}>
+                <input
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                  placeholder={webSearchMode ? "Search the web..." : "Ask a question..."}
+                  className="flex-1 bg-transparent border-none outline-none text-sm text-stone-900 px-3 py-1.5 placeholder:text-stone-400"
+                />
+                <button
+                  onClick={() => setWebSearchMode(!webSearchMode)}
+                  className={`p-2 rounded-lg transition-all ${webSearchMode
+                      ? 'bg-blue-100 text-blue-600 hover:bg-blue-200'
+                      : 'bg-stone-100 text-stone-500 hover:bg-stone-200'
+                    }`}
+                  title={webSearchMode ? "Switch to Document Search" : "Switch to Web Search"}
+                >
+                  <Globe size={16} strokeWidth={2} />
+                </button>
+                <button
+                  onClick={handleSend}
+                  disabled={!input.trim()}
+                  className="p-2 bg-stone-900 hover:bg-stone-800 text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed shadow-sm hover:shadow"
+                >
+                  <Send size={16} strokeWidth={2} />
+                </button>
+              </div>
             </div>
           </div>
         </div>
