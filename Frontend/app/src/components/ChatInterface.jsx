@@ -23,7 +23,7 @@ const ChatInterface = () => {
 
   const fetchDocuments = async () => {
     try {
-      const response = await axios.get('http://localhost:6568/documents', {
+      const response = await axios.get('https://rag.cmti.online/documents', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       setDocuments(response.data);
@@ -49,7 +49,7 @@ const ChatInterface = () => {
     formData.append('file', file);
 
     try {
-      const response = await axios.post('http://localhost:6568/ingest', formData, {
+      const response = await axios.post('https://rag.cmti.online/ingest', formData, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'multipart/form-data'
@@ -86,7 +86,7 @@ const ChatInterface = () => {
 
       if (webSearchMode) {
         // Web search mode
-        response = await axios.post('http://localhost:6568/web-query', null, {
+        response = await axios.post('https://rag.cmti.online/web-query', null, {
           params: { question: userMessage.content },
           headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -96,7 +96,7 @@ const ChatInterface = () => {
         if (activeDocId) {
           params.doc_id = activeDocId;
         }
-        response = await axios.post('http://localhost:6568/query', null, {
+        response = await axios.post('https://rag.cmti.online/query', null, {
           params: params,
           headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -125,7 +125,7 @@ const ChatInterface = () => {
     setActiveDocId(doc.id);
 
     try {
-      const response = await axios.get(`http://localhost:6568/documents/${doc.id}/file`, {
+      const response = await axios.get(`https://rag.cmti.online/documents/${doc.id}/file`, {
         headers: { 'Authorization': `Bearer ${token}` },
         responseType: 'blob'
       });
@@ -302,8 +302,8 @@ const ChatInterface = () => {
                 </div>
               )}
               <div className={`flex items-center gap-2 bg-white rounded-xl p-1.5 border transition-all shadow-sm ${webSearchMode
-                  ? 'border-blue-300 ring-2 ring-blue-50'
-                  : 'border-stone-200 focus-within:border-stone-300 focus-within:ring-2 focus-within:ring-stone-50'
+                ? 'border-blue-300 ring-2 ring-blue-50'
+                : 'border-stone-200 focus-within:border-stone-300 focus-within:ring-2 focus-within:ring-stone-50'
                 }`}>
                 <input
                   type="text"
@@ -316,8 +316,8 @@ const ChatInterface = () => {
                 <button
                   onClick={() => setWebSearchMode(!webSearchMode)}
                   className={`p-2 rounded-lg transition-all ${webSearchMode
-                      ? 'bg-blue-100 text-blue-600 hover:bg-blue-200'
-                      : 'bg-stone-100 text-stone-500 hover:bg-stone-200'
+                    ? 'bg-blue-100 text-blue-600 hover:bg-blue-200'
+                    : 'bg-stone-100 text-stone-500 hover:bg-stone-200'
                     }`}
                   title={webSearchMode ? "Switch to Document Search" : "Switch to Web Search"}
                 >

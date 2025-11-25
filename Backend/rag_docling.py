@@ -26,8 +26,6 @@ from transformers import AutoTokenizer
 import logging
 import re
 from typing import List, Dict, Any
-
-import easyocr
 from pdf2image import convert_from_path
 
 # Setup logging
@@ -88,36 +86,6 @@ def get_document_converter() -> DocumentConverter:
     return converter
 
 
-def extract_text_with_easyocr(pdf_path: str) -> str:
-    """
-    Extract text from scanned PDFs using EasyOCR.
-    Used when Docling cannot extract meaningful text.
-    """
-    reader = easyocr.Reader(['en'])
-
-    try:
-        pages = convert_from_path(pdf_path)
-    except Exception as e:
-        logger.error(f"pdf2image failed: {e}")
-        return ""
-
-    ocr_text_parts = []
-
-    for idx, page in enumerate(pages):
-        logger.info(f"Running EasyOCR on page {idx+1}/{len(pages)}")
-
-        # Convert PIL image → array
-        result = reader.readtext(np.array(page), detail=0)
-
-        page_text = "\n".join(result)
-
-        if len(page_text.strip()) > 5:
-            ocr_text_parts.append(page_text)
-
-    full_ocr = "\n\n".join(ocr_text_parts)
-    logger.info(f"EasyOCR extracted {len(full_ocr)} characters")
-
-    return full_ocr
 
 
 # ----- HybridChunker Setup -----
@@ -200,11 +168,11 @@ def extract_text_multi_strategy(doc, file_path=None) -> str:
         return text
 
     # Strategy 3: EASYOCR fallback
-    if file_path and file_path.lower().endswith(".pdf"):
-        logger.warning("Docling extraction failed → Running EasyOCR fallback")
-        text = extract_text_with_easyocr(file_path)
-        if text and len(text) > 50:
-            return text
+    # if file_path and file_path.lower().endswith(".pdf"):
+    #     logger.warning("Docling extraction failed → Running EasyOCR fallback")
+    #     text = extract_text_with_easyocr(file_path)
+    #     if text and len(text) > 50:
+    #         return text
 
     return ""
 
