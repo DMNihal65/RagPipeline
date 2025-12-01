@@ -1,9 +1,6 @@
 fastapi
 uvicorn
 pymupdf
-fastapi
-uvicorn
-pymupdf
 sentence-transformers
 numpy
 python-dotenv
@@ -23,9 +20,11 @@ docling-parse
 # Optional: For better OCR support (if you have scanned documents)
 docling-ibm-models
 
-# Web Search and Scraping
-duckduckgo-search
-crawl4ai
+# Web Search and Scraping - Premium APIs + Hybrid Approach
+tavily-python>=0.3.0
+exa-py>=1.0.0
+trafilatura>=1.6.0
+playwright>=1.40.0
 beautifulsoup4
 lxml
 aiohttp

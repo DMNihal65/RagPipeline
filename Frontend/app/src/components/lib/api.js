@@ -1,4 +1,4 @@
-const API = "https://rag.cmti.online";
+const API = "http://localhost:6568";
 
 export async function uploadPDF(file) {
   const fd = new FormData();

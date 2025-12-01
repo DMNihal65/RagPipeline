@@ -1,246 +1,348 @@
 """
-Web Search Module - FastAPI Router Compatible Version
-Windows Compatible with Crawl4AI Integration
+Web Search Module - Premium Search APIs + Smart Crawling
+Uses Tavily (primary) → Exa AI (fallback) → Jina AI (enhancement)
 """
 
 import asyncio
 import logging
-import sys
+import os
+import re
 from typing import List, Dict, Optional
 from urllib.parse import urlparse
 import aiohttp
-from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
 import numpy as np
-import re
+from dotenv import load_dotenv
 
-# ============================================================================
-# CRITICAL FIX for Windows - Must be at the very top before any async code
-# ============================================================================
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+# Load environment variables
+load_dotenv()
 
-# Crawl4AI imports
+# Premium Search APIs
 try:
-    from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-    CRAWL4AI_AVAILABLE = True
-    print("✅ Crawl4AI loaded successfully")
-except ImportError as e:
-    CRAWL4AI_AVAILABLE = False
-    print(f"⚠️  Crawl4AI not available: {e}")
+    from tavily import TavilyClient
+    TAVILY_AVAILABLE = True
+except ImportError:
+    TAVILY_AVAILABLE = False
+    print("⚠️  Tavily not available")
+
+try:
+    from exa_py import Exa
+    EXA_AVAILABLE = True
+except ImportError:
+    EXA_AVAILABLE = False
+    print("⚠️  Exa AI not available")
+
+# Content extraction fallbacks
+try:
+    from trafilatura import fetch_url, extract
+    TRAFILATURA_AVAILABLE = True
+except ImportError:
+    TRAFILATURA_AVAILABLE = False
+
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize embedding model (singleton pattern for efficiency)
+# Initialize embedding model (singleton pattern)
 _embedding_model = None
 
 def get_embedding_model():
-    """Lazy load embedding model to avoid initialization on import"""
+    """Lazy load embedding model"""
     global _embedding_model
     if _embedding_model is None:
         _embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
     return _embedding_model
 
-# Quality domains
-QUALITY_DOMAINS = {
-    'wikipedia.org', 'britannica.com', 'nature.com', 'science.org',
-    'ncbi.nlm.nih.gov', 'stackoverflow.com', 'github.com'
-}
-
+# Quality and blocked domains
 BLOCKED_DOMAINS = {
     'pinterest.com', 'instagram.com', 'facebook.com', 'twitter.com'
 }
 
 
-class SearchEngine:
-    """Simple DuckDuckGo search"""
+class TavilySearchEngine:
+    """
+    Tavily Search API - Primary search engine
+    Provides high-quality results with pre-extracted content
+    """
     
-    @staticmethod
-    async def search(query: str, num_results: int = 6) -> List[Dict]:
-        """Search using DuckDuckGo"""
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv('TAVILY_API_KEY')
+        if not self.api_key:
+            raise ValueError("Tavily API key not found")
+        self.client = TavilyClient(api_key=self.api_key)
+    
+    async def search(self, query: str, num_results: int = 6) -> Dict:
+        """
+        Search using Tavily API
+        
+        Returns:
+            Dict with 'results' (list of search results) and 'answer' (AI summary)
+        """
         try:
-            from duckduckgo_search import DDGS
+            logger.info(f"🔵 Tavily search: {query}")
+            
+            # Tavily is synchronous, run in executor
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.client.search(
+                    query=query,
+                    max_results=num_results,
+                    include_answer=True,
+                    include_raw_content=False
+                )
+            )
             
             results = []
-            with DDGS() as ddgs:
-                search_results = ddgs.text(
-                    query,
-                    max_results=num_results * 2,
-                    region='in-en'
-                )
+            for item in response.get('results', []):
+                url = item.get('url', '')
                 
-                for result in search_results:
-                    url = result.get('href', result.get('link', ''))
-                    
-                    # Basic URL filtering
-                    if not SearchEngine._is_valid_url(url):
-                        continue
-                    
-                    results.append({
-                        'title': result.get('title', ''),
-                        'url': url,
-                        'snippet': result.get('body', result.get('snippet', ''))
-                    })
-                    
-                    if len(results) >= num_results:
-                        break
+                # Filter blocked domains
+                if self._is_blocked_url(url):
+                    continue
+                
+                results.append({
+                    'url': url,
+                    'title': item.get('title', ''),
+                    'content': item.get('content', ''),  # Pre-extracted content!
+                    'score': item.get('score', 0.0),
+                    'favicon': item.get('favicon', ''),
+                    'source': 'tavily'
+                })
             
-            logger.info(f"✅ Found {len(results)} search results")
-            return results
+            logger.info(f"✅ Tavily found {len(results)} results")
+            
+            return {
+                'results': results,
+                'answer': response.get('answer', ''),
+                'success': True
+            }
         
         except Exception as e:
-            logger.error(f"❌ Search error: {e}")
-            return []
+            logger.error(f"❌ Tavily error: {str(e)[:100]}")
+            return {'results': [], 'answer': '', 'success': False, 'error': str(e)}
     
     @staticmethod
-    def _is_valid_url(url: str) -> bool:
-        """Basic URL validation"""
+    def _is_blocked_url(url: str) -> bool:
+        """Check if URL is from blocked domain"""
         try:
             parsed = urlparse(url.lower())
             domain = parsed.netloc.replace('www.', '')
-            
-            # Block bad domains
-            if any(blocked in domain for blocked in BLOCKED_DOMAINS):
-                return False
-            
-            return True
+            return any(blocked in domain for blocked in BLOCKED_DOMAINS)
         except:
             return False
 
 
-class SimpleCrawler:
-    """Simplified crawler - Windows Compatible"""
+class ExaSearchEngine:
+    """
+    Exa AI Search API - Fallback search engine
+    Provides neural search with full text content extraction
+    """
     
-    def __init__(self):
-        self.browser_config = None
-        if CRAWL4AI_AVAILABLE:
-            # Minimal browser config for Windows
-            self.browser_config = BrowserConfig(
-                headless=True,
-                verbose=False
-            )
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv('EXA_API_KEY')
+        if not self.api_key:
+            raise ValueError("Exa API key not found")
+        self.client = Exa(api_key=self.api_key)
     
-    async def crawl_url(self, url: str) -> Optional[Dict]:
+    async def search(self, query: str, num_results: int = 6) -> Dict:
         """
-        Crawl single URL using Crawl4AI
-        Windows compatible with proper error handling
-        """
-        if not CRAWL4AI_AVAILABLE:
-            return await self._fallback_scrape(url)
+        Search using Exa AI API with content extraction
         
+        Returns:
+            Dict with 'results' (list of search results with full text)
+        """
         try:
-            logger.info(f"🕷️  Crawling with Crawl4AI: {url}")
+            logger.info(f"🟡 Exa AI search: {query}")
             
-            # Create crawler and crawl
-            async with AsyncWebCrawler(config=self.browser_config) as crawler:
-                run_config = CrawlerRunConfig(
-                    cache_mode=CacheMode.BYPASS,
-                    word_count_threshold=50
+            # Exa is synchronous, run in executor
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.client.search_and_contents(
+                    query=query,
+                    text=True,
+                    type="auto",
+                    num_results=num_results
                 )
+            )
+            
+            results = []
+            for item in response.results:
+                url = item.url
                 
-                result = await crawler.arun(url=url, config=run_config)
+                # Filter blocked domains
+                if self._is_blocked_url(url):
+                    continue
                 
-                if not result.success:
-                    logger.warning(f"⚠️  Crawl4AI failed, using fallback: {url}")
-                    return await self._fallback_scrape(url)
+                # Exa provides full text content
+                text = item.text if hasattr(item, 'text') else ''
                 
-                # Extract text
-                text = ""
-                if hasattr(result, 'markdown'):
-                    if hasattr(result.markdown, 'raw_markdown'):
-                        text = result.markdown.raw_markdown
-                    elif isinstance(result.markdown, str):
-                        text = result.markdown
-                
-                if not text and result.html:
-                    # Parse HTML if markdown not available
-                    soup = BeautifulSoup(result.html, 'html.parser')
-                    text = soup.get_text(separator=' ', strip=True)
-                
-                text = self._clean_text(text)
-                
-                if len(text) < 200:
-                    logger.warning(f"⚠️  Content too short, using fallback: {url}")
-                    return await self._fallback_scrape(url)
-                
-                logger.info(f"✅ Crawl4AI success {url}: {len(text)} chars")
-                
-                return {
+                results.append({
                     'url': url,
-                    'text': text,
-                    'title': result.title or '',
-                    'success': True,
-                    'method': 'crawl4ai'
-                }
-        
-        except NotImplementedError as e:
-            # Windows subprocess issue - use fallback
-            logger.warning(f"⚠️  Windows subprocess issue, using fallback for {url}")
-            return await self._fallback_scrape(url)
+                    'title': item.title if hasattr(item, 'title') else '',
+                    'content': text,  # Full text content!
+                    'author': item.author if hasattr(item, 'author') else '',
+                    'published_date': item.published_date if hasattr(item, 'published_date') else '',
+                    'favicon': item.favicon if hasattr(item, 'favicon') else '',
+                    'score': 0.95,  # Exa doesn't provide scores, use high default
+                    'source': 'exa'
+                })
+            
+            logger.info(f"✅ Exa AI found {len(results)} results")
+            
+            return {
+                'results': results,
+                'success': True
+            }
         
         except Exception as e:
-            logger.error(f"❌ Crawl4AI error for {url}: {str(e)[:100]}")
-            return await self._fallback_scrape(url)
+            logger.error(f"❌ Exa AI error: {str(e)[:100]}")
+            return {'results': [], 'success': False, 'error': str(e)}
     
-    async def _fallback_scrape(self, url: str) -> Optional[Dict]:
-        """Simple fallback scraping"""
+    @staticmethod
+    def _is_blocked_url(url: str) -> bool:
+        """Check if URL is from blocked domain"""
         try:
-            logger.info(f"🌐 Fallback scraping: {url}")
+            parsed = urlparse(url.lower())
+            domain = parsed.netloc.replace('www.', '')
+            return any(blocked in domain for blocked in BLOCKED_DOMAINS)
+        except:
+            return False
+
+
+class ContentEnhancer:
+    """
+    Enhance content using Jina AI, Trafilatura, or Playwright
+    Only used when search APIs don't provide enough content
+    """
+    
+    def __init__(self, jina_api_key: Optional[str] = None):
+        self.jina_api_key = jina_api_key
+        self.jina_endpoint = "https://r.jina.ai/"
+        self.stats = {
+            'jina': 0,
+            'trafilatura': 0,
+            'playwright': 0,
+            'skipped': 0
+        }
+    
+    async def enhance_if_needed(self, url: str, existing_content: str, min_length: int = 300) -> Optional[str]:
+        """
+        Enhance content only if existing content is insufficient
+        
+        Args:
+            url: URL to fetch content from
+            existing_content: Content already provided by search API
+            min_length: Minimum content length to skip enhancement
             
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+        Returns:
+            Enhanced content or existing content if sufficient
+        """
+        # If we already have good content, skip enhancement
+        if len(existing_content) >= min_length:
+            self.stats['skipped'] += 1
+            return existing_content
+        
+        logger.info(f"📝 Enhancing content for: {url}")
+        
+        # Try enhancement methods
+        enhanced = await self._enhance_with_jina(url)
+        if enhanced and len(enhanced) > len(existing_content):
+            self.stats['jina'] += 1
+            return enhanced
+        
+        if TRAFILATURA_AVAILABLE:
+            enhanced = await self._enhance_with_trafilatura(url)
+            if enhanced and len(enhanced) > len(existing_content):
+                self.stats['trafilatura'] += 1
+                return enhanced
+        
+        if PLAYWRIGHT_AVAILABLE:
+            enhanced = await self._enhance_with_playwright(url)
+            if enhanced and len(enhanced) > len(existing_content):
+                self.stats['playwright'] += 1
+                return enhanced
+        
+        # Return existing content if enhancement failed
+        return existing_content
+    
+    async def _enhance_with_jina(self, url: str) -> Optional[str]:
+        """Enhance using Jina AI Reader API"""
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            if self.jina_api_key:
+                headers['Authorization'] = f'Bearer {self.jina_api_key}'
+            
+            jina_url = f"{self.jina_endpoint}{url}"
             
             timeout = aiohttp.ClientTimeout(total=10)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, headers=headers) as response:
-                    if response.status != 200:
-                        return None
-                    
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Remove unwanted tags
-                    for tag in soup(['script', 'style', 'nav', 'footer', 'header']):
-                        tag.decompose()
-                    
-                    # Get main content
-                    main = soup.find('main') or soup.find('article') or soup.find('body')
-                    if not main:
-                        return None
-                    
+                async with session.get(jina_url, headers=headers) as response:
+                    if response.status == 200:
+                        content = await response.text()
+                        return self._clean_text(content)
+        except:
+            pass
+        return None
+    
+    async def _enhance_with_trafilatura(self, url: str) -> Optional[str]:
+        """Enhance using Trafilatura"""
+        try:
+            loop = asyncio.get_event_loop()
+            downloaded = await loop.run_in_executor(None, fetch_url, url)
+            if downloaded:
+                text = await loop.run_in_executor(
+                    None,
+                    lambda: extract(downloaded, include_comments=False, include_tables=True)
+                )
+                if text:
+                    return self._clean_text(text)
+        except:
+            pass
+        return None
+    
+    async def _enhance_with_playwright(self, url: str) -> Optional[str]:
+        """Enhance using Playwright (for complex JS sites)"""
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.goto(url, wait_until='networkidle', timeout=10000)
+                content = await page.content()
+                await browser.close()
+                
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(content, 'html.parser')
+                for tag in soup(['script', 'style', 'nav', 'footer', 'header']):
+                    tag.decompose()
+                
+                main = soup.find('main') or soup.find('article') or soup.find('body')
+                if main:
                     text = main.get_text(separator=' ', strip=True)
-                    text = self._clean_text(text)
-                    
-                    if len(text) < 200:
-                        return None
-                    
-                    logger.info(f"✅ Fallback success {url}: {len(text)} chars")
-                    
-                    return {
-                        'url': url,
-                        'text': text,
-                        'title': soup.title.string if soup.title else '',
-                        'success': True,
-                        'method': 'fallback'
-                    }
-        
-        except Exception as e:
-            logger.error(f"❌ Fallback error for {url}: {str(e)[:100]}")
-            return None
+                    return self._clean_text(text)
+        except:
+            pass
+        return None
     
     @staticmethod
     def _clean_text(text: str) -> str:
-        """Clean text"""
+        """Clean and normalize text"""
         if not text:
             return ""
-        
-        # Remove extra whitespace
         text = re.sub(r'\s+', ' ', text)
-        # Remove URLs
         text = re.sub(r'http\S+', '', text)
+        text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
         return text.strip()
+    
+    def get_stats(self) -> Dict:
+        """Get enhancement statistics"""
+        return self.stats.copy()
 
 
 def chunk_text(text: str, chunk_size: int = 800) -> List[str]:
@@ -248,7 +350,7 @@ def chunk_text(text: str, chunk_size: int = 800) -> List[str]:
     words = text.split()
     chunks = []
     
-    for i in range(0, len(words), chunk_size // 6):  # ~6 chars per word avg
+    for i in range(0, len(words), chunk_size // 6):
         chunk = ' '.join(words[i:i + chunk_size // 6])
         if len(chunk) > 100:
             chunks.append(chunk)
@@ -256,47 +358,90 @@ def chunk_text(text: str, chunk_size: int = 800) -> List[str]:
     return chunks[:5]  # Max 5 chunks per source
 
 
-async def search_and_crawl(query: str, num_results: int = 6) -> Dict:
+async def search_and_process(
+    query: str,
+    num_results: int = 6,
+    tavily_api_key: Optional[str] = None,
+    exa_api_key: Optional[str] = None,
+    jina_api_key: Optional[str] = None,
+    enhance_content: bool = False
+) -> Dict:
     """
-    Main function: Search and crawl
-    Simplified - sequential processing
+    Main function: Search using premium APIs and process results
+    
+    Args:
+        query: Search query
+        num_results: Number of results to fetch
+        tavily_api_key: Tavily API key (optional, uses env var)
+        exa_api_key: Exa API key (optional, uses env var)
+        jina_api_key: Jina API key for content enhancement (optional)
+        enhance_content: Whether to enhance content with additional crawling
+        
+    Returns:
+        Dict with chunks, sources, embeddings, and stats
     """
     logger.info(f"🔍 Starting search for: {query}")
     
-    # Step 1: Search
-    search_results = await SearchEngine.search(query, num_results)
+    search_results = []
+    ai_answer = ""
+    search_method = ""
+    
+    # Try Tavily first (primary)
+    if TAVILY_AVAILABLE:
+        try:
+            tavily = TavilySearchEngine(api_key=tavily_api_key)
+            response = await tavily.search(query, num_results)
+            
+            if response.get('success') and response.get('results'):
+                search_results = response['results']
+                ai_answer = response.get('answer', '')
+                search_method = 'tavily'
+                logger.info(f"✅ Using Tavily results")
+        except Exception as e:
+            logger.warning(f"⚠️  Tavily failed: {str(e)[:100]}")
+    
+    # Fallback to Exa AI if Tavily failed
+    if not search_results and EXA_AVAILABLE:
+        try:
+            exa = ExaSearchEngine(api_key=exa_api_key)
+            response = await exa.search(query, num_results)
+            
+            if response.get('success') and response.get('results'):
+                search_results = response['results']
+                search_method = 'exa'
+                logger.info(f"✅ Using Exa AI results")
+        except Exception as e:
+            logger.warning(f"⚠️  Exa AI failed: {str(e)[:100]}")
     
     if not search_results:
         return {
             'chunks': [],
             'sources': [],
             'embeddings': None,
-            'error': 'No search results found'
+            'error': 'No search results found from any API',
+            'search_method': 'none'
         }
     
-    # Step 2: Crawl each URL (sequentially)
-    crawler = SimpleCrawler()
+    # Process results and optionally enhance content
+    enhancer = ContentEnhancer(jina_api_key=jina_api_key) if enhance_content else None
     all_chunks = []
     all_sources = []
-    crawl_methods = {'crawl4ai': 0, 'fallback': 0}
-    successful_crawls = 0
     
     for result in search_results:
-        crawl_result = await crawler.crawl_url(result['url'])
+        content = result.get('content', '')
         
-        if not crawl_result or not crawl_result.get('success'):
+        # Optionally enhance content if it's too short
+        if enhancer and len(content) < 300:
+            content = await enhancer.enhance_if_needed(result['url'], content)
+        
+        if len(content) < 100:
+            logger.warning(f"⚠️  Skipping {result['url']}: content too short")
             continue
         
-        successful_crawls += 1
-        
-        # Track which method worked
-        method = crawl_result.get('method', 'unknown')
-        crawl_methods[method] = crawl_methods.get(method, 0) + 1
-        
         # Chunk the content
-        chunks = chunk_text(crawl_result['text'])
+        chunks = chunk_text(content)
         
-        # Extract domain for source metadata
+        # Extract domain
         try:
             domain = urlparse(result['url']).netloc.replace('www.', '')
         except:
@@ -306,11 +451,15 @@ async def search_and_crawl(query: str, num_results: int = 6) -> Dict:
             all_chunks.append(chunk)
             all_sources.append({
                 'url': result['url'],
-                'title': crawl_result['title'] or result['title'],
-                'snippet': result['snippet'],
+                'title': result.get('title', ''),
                 'domain': domain,
+                'score': result.get('score', 0.0),
+                'favicon': result.get('favicon', ''),
+                'author': result.get('author', ''),
+                'published_date': result.get('published_date', ''),
                 'chunk_index': idx,
-                'method': method
+                'source_api': result.get('source', search_method),
+                'snippet': chunk[:200]
             })
     
     if not all_chunks:
@@ -318,28 +467,33 @@ async def search_and_crawl(query: str, num_results: int = 6) -> Dict:
             'chunks': [],
             'sources': [],
             'embeddings': None,
-            'error': 'Failed to crawl any sources',
-            'total_sources': len(search_results),
-            'successful_crawls': 0
+            'error': 'Failed to extract content from search results',
+            'search_method': search_method,
+            'total_results': len(search_results)
         }
     
-    # Step 3: Generate embeddings
+    # Generate embeddings
     logger.info(f"🧠 Generating embeddings for {len(all_chunks)} chunks")
-    logger.info(f"📊 Crawl methods used: {crawl_methods}")
     
     embedding_model = get_embedding_model()
     embeddings = embedding_model.encode(all_chunks, show_progress_bar=False)
     
-    logger.info(f"✅ Complete: {len(all_chunks)} chunks from {successful_crawls} sources")
-    
-    return {
+    result_dict = {
         'chunks': all_chunks,
         'sources': all_sources,
         'embeddings': embeddings,
-        'crawl_methods': crawl_methods,
-        'total_sources': len(search_results),
-        'successful_crawls': successful_crawls
+        'search_method': search_method,
+        'ai_answer': ai_answer,
+        'total_results': len(search_results),
+        'successful_chunks': len(all_chunks)
     }
+    
+    if enhancer:
+        result_dict['enhancement_stats'] = enhancer.get_stats()
+    
+    logger.info(f"✅ Complete: {len(all_chunks)} chunks from {len(search_results)} sources via {search_method}")
+    
+    return result_dict
 
 
 def find_relevant_chunks(query: str, chunks: List[str], sources: List[Dict],
@@ -368,30 +522,46 @@ def find_relevant_chunks(query: str, chunks: List[str], sources: List[Dict],
 
 
 # ============================================================================
-# ROUTER-COMPATIBLE FUNCTION - This is what your router will call
+# ROUTER-COMPATIBLE FUNCTION
 # ============================================================================
 
-async def process_web_search(query: str, num_results: int = 6) -> Dict:
+async def process_web_search(
+    query: str,
+    num_results: int = 6,
+    tavily_api_key: Optional[str] = None,
+    exa_api_key: Optional[str] = None,
+    jina_api_key: Optional[str] = None,
+    enhance_content: bool = False
+) -> Dict:
     """
-    FastAPI router-compatible function for web search and crawling.
-    
-    This function matches the interface expected by your /web-query endpoint.
+    FastAPI router-compatible function for web search.
     
     Args:
         query: The search query string
         num_results: Number of search results to process (default 6)
+        tavily_api_key: Tavily API key (optional)
+        exa_api_key: Exa API key (optional)
+        jina_api_key: Jina API key for content enhancement (optional)
+        enhance_content: Whether to enhance content with additional crawling
     
     Returns:
         Dict with keys:
-            - chunks: List of text chunks from crawled pages
+            - chunks: List of text chunks
             - sources: List of source metadata dicts
             - embeddings: numpy array of embeddings
+            - search_method: Which API was used ('tavily' or 'exa')
+            - ai_answer: AI-generated answer (from Tavily)
             - error: Optional error message
-            - total_sources: Total number of search results found
-            - successful_crawls: Number of successfully crawled pages
     """
     try:
-        result = await search_and_crawl(query, num_results)
+        result = await search_and_process(
+            query,
+            num_results,
+            tavily_api_key,
+            exa_api_key,
+            jina_api_key,
+            enhance_content
+        )
         return result
     except Exception as e:
         logger.error(f"❌ process_web_search error: {str(e)}")
@@ -400,8 +570,7 @@ async def process_web_search(query: str, num_results: int = 6) -> Dict:
             'sources': [],
             'embeddings': None,
             'error': f'Search processing failed: {str(e)}',
-            'total_sources': 0,
-            'successful_crawls': 0
+            'search_method': 'none'
         }
 
 
@@ -409,24 +578,31 @@ async def process_web_search(query: str, num_results: int = 6) -> Dict:
 # Test function
 # ============================================================================
 
-async def test_crawler():
-    """Test the crawler"""
+async def test_search():
+    """Test the premium search APIs"""
     print("\n" + "="*60)
-    print("TESTING WEB SEARCH & CRAWL")
+    print("TESTING PREMIUM SEARCH APIs (Tavily + Exa AI)")
     print("="*60 + "\n")
     
-    query = "how does the replace works in spark python"
-    result = await process_web_search(query, num_results=3)
+    query = "how does perplexity AI work"
+    result = await process_web_search(query, num_results=5, enhance_content=False)
     
     if result.get('error'):
         print(f"❌ Error: {result['error']}")
         return
     
     print(f"\n✅ Success!")
+    print(f"   Search method: {result.get('search_method', 'unknown')}")
+    print(f"   Total results: {result.get('total_results', 0)}")
     print(f"   Chunks: {len(result['chunks'])}")
     print(f"   Sources: {len(set(s['url'] for s in result['sources']))}")
-    print(f"   Successful crawls: {result.get('successful_crawls', 0)}/{result.get('total_sources', 0)}")
-    print(f"   Crawl methods: {result.get('crawl_methods', {})}")
+    
+    if result.get('ai_answer'):
+        print(f"\n🤖 AI Answer (from Tavily):")
+        print(f"   {result['ai_answer'][:200]}...")
+    
+    if result.get('enhancement_stats'):
+        print(f"\n📊 Enhancement stats: {result['enhancement_stats']}")
     
     # Test relevance search
     if result['chunks']:
@@ -440,18 +616,12 @@ async def test_crawler():
         
         print(f"\n📊 Top 3 relevant chunks:")
         for i, r in enumerate(relevant, 1):
-            print(f"\n{i}. Score: {r['similarity']:.3f}")
-            print(f"   Source: {r['source']['url']}")
-            print(f"   Method: {r['source']['method']}")
+            print(f"\n{i}. Similarity: {r['similarity']:.3f} | Score: {r['source'].get('score', 0):.3f}")
+            print(f"   Source: {r['source']['title']}")
+            print(f"   URL: {r['source']['url']}")
+            print(f"   API: {r['source'].get('source_api', 'unknown')}")
             print(f"   Text: {r['text'][:150]}...")
 
 
 if __name__ == "__main__":
-    # Create new event loop explicitly for Windows
-    if sys.platform == 'win32':
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(test_crawler())
-        loop.close()
-    else:
-        asyncio.run(test_crawler())
+    asyncio.run(test_search())

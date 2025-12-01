@@ -327,11 +327,12 @@ async def web_query(question: str, current_user: dict = Depends(get_current_user
             
             # Track unique sources
             if url not in sources_map:
+                snippet = source.get('snippet') or chunk_data['text'][:200]
                 sources_map[url] = {
                     'url': url,
                     'title': source['title'],
                     'domain': source['domain'],
-                    'snippet': source['snippet']
+                    'snippet': snippet
                 }
             
             # Add context with source reference
