@@ -316,23 +316,30 @@ const ChatInterface = () => {
                           <span className="text-sm">Thinking...</span>
                         </div>
                       ) : (
-                        <div className="prose prose-sm max-w-none prose-headings:font-semibold prose-headings:text-stone-900 prose-headings:mt-4 prose-headings:mb-2 prose-p:text-stone-700 prose-p:leading-relaxed prose-p:my-3 prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline prose-strong:text-stone-900 prose-strong:font-semibold prose-code:text-pink-600 prose-code:bg-pink-50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:font-mono prose-pre:bg-stone-900 prose-pre:border prose-pre:border-stone-200 prose-pre:rounded-lg prose-pre:overflow-x-auto prose-blockquote:border-l-stone-300 prose-blockquote:text-stone-600 prose-blockquote:my-4 prose-ul:my-3 prose-ol:my-3 prose-li:my-1.5 prose-hr:my-6">
+                        <div className="prose prose-sm max-w-none prose-headings:font-semibold prose-headings:text-stone-900 prose-headings:mt-4 prose-headings:mb-2 prose-p:text-stone-700 prose-p:leading-relaxed prose-p:my-3 prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline prose-strong:text-stone-900 prose-strong:font-semibold prose-blockquote:border-l-stone-300 prose-blockquote:text-stone-600 prose-blockquote:my-4 prose-ul:my-3 prose-ol:my-3 prose-li:my-1.5 prose-hr:my-6">
                           <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
                             components={{
                               code({ node, inline, className, children, ...props }) {
                                 const match = /language-(\w+)/.exec(className || '');
-                                return !inline && match ? (
-                                  <div className="relative">
-                                    <div className="absolute top-2 right-3 text-[10px] text-stone-400 font-mono bg-stone-800 px-2 py-0.5 rounded">
-                                      {match[1]}
+                                if (!inline && match) {
+                                  // Code block (multi-line)
+                                  return (
+                                    <div className="relative my-4">
+                                      <div className="absolute top-2 right-3 text-[10px] text-stone-300 font-mono bg-stone-800/80 px-2 py-0.5 rounded z-10">
+                                        {match[1]}
+                                      </div>
+                                      <pre className="bg-stone-900 border border-stone-700 rounded-lg overflow-x-auto p-4 my-2">
+                                        <code className="text-stone-100 font-mono text-sm leading-relaxed" {...props}>
+                                          {children}
+                                        </code>
+                                      </pre>
                                     </div>
-                                    <code className={className} {...props}>
-                                      {children}
-                                    </code>
-                                  </div>
-                                ) : (
-                                  <code className={className} {...props}>
+                                  );
+                                }
+                                // Inline code
+                                return (
+                                  <code className="bg-stone-100 text-stone-900 px-1.5 py-0.5 rounded text-xs font-mono font-semibold border border-stone-200" {...props}>
                                     {children}
                                   </code>
                                 );
