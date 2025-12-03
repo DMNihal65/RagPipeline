@@ -13,3 +13,64 @@ body {
   width: 100vw;
   overflow: hidden;
 }
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+@keyframes pulse-dot {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+/* Markdown styling improvements */
+.prose code {
+  font-family: 'Fira Code', 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+.prose pre {
+  border-radius: 0.5rem;
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+.prose pre code {
+  background: transparent;
+  padding: 0;
+  color: #e5e7eb;
+}
+
+.prose blockquote {
+  border-left-width: 4px;
+  padding-left: 1rem;
+  font-style: italic;
+}
+
+.prose table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.prose hr {
+  border-color: #e5e7eb;
+  margin: 1.5rem 0;
+}

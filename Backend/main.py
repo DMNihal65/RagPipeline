@@ -207,7 +207,7 @@ async def query(question: str, doc_id: Optional[int] = None, current_user: dict 
     
     context = "\n\n---\n\n".join(context_parts)
     
-    # Enhanced prompt with metadata awareness
+    # Enhanced prompt with metadata awareness and markdown formatting
     prompt = f"""You are a RAG assistant with access to document content that has been carefully extracted and structured.
 
 The context below includes page numbers and section headings for precise citations.
@@ -222,10 +222,22 @@ Instructions:
 2. If the answer is not in the context, say "Not found in document"
 3. Include specific page numbers and sections when citing information
 4. For tables or structured data, preserve the structure in your answer
+5. Format your answer using Markdown syntax for better readability:
+   - Use **bold** for emphasis
+   - Use *italic* for subtle emphasis
+   - Use bullet points (- or *) for lists
+   - Use numbered lists (1., 2., etc.) for ordered items
+   - Use code blocks (```language) for code snippets
+   - Use `inline code` for technical terms
+   - Use ## for section headings if the answer is long
+   - Use > for blockquotes when citing specific passages
+   - Use tables when presenting structured data
+
+IMPORTANT: Return your answer in Markdown format. Make it well-structured, easy to read, and visually appealing.
 
 Return your response as JSON in this exact format:
 {{
-  "answer": "your detailed answer here",
+  "answer": "your detailed markdown-formatted answer here",
   "citations": [
     {{"page": 1, "section": "Introduction", "snippet": "relevant text"}},
     {{"page": 3, "section": "Methods", "snippet": "relevant text"}}
@@ -357,11 +369,23 @@ INSTRUCTIONS:
 3. Be accurate and cite your sources naturally in the text
 4. If the search results don't fully answer the question, acknowledge this
 5. Use clear, concise language
-6. Structure your response with paragraphs for readability
+6. Format your answer using Markdown syntax for better readability:
+   - Use **bold** for emphasis and key points
+   - Use *italic* for subtle emphasis
+   - Use bullet points (- or *) for lists
+   - Use numbered lists (1., 2., etc.) for ordered items
+   - Use code blocks (```language) for code snippets or technical examples
+   - Use `inline code` for technical terms, product names, or specific values
+   - Use ## for section headings to organize longer answers
+   - Use > for blockquotes when citing specific information
+   - Use tables when presenting structured data or comparisons
+   - Use horizontal rules (---) to separate major sections
 
-Return ONLY a JSON object with this EXACT structure (no markdown, no code blocks):
+IMPORTANT: Return your answer in Markdown format. Make it well-structured, visually appealing, and easy to read.
+
+Return ONLY a JSON object with this EXACT structure:
 {{
-  "answer": "Your detailed answer here. Reference sources like 'According to [source title]...' naturally in your text.",
+  "answer": "Your detailed markdown-formatted answer here. Reference sources like 'According to [source title]...' naturally in your text.",
   "key_sources": [
     {{"url": "https://example.com", "title": "Page Title", "relevance": "Brief note on what this source contributed"}}
   ]

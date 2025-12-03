@@ -5,10 +5,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System deps for scientific libs
+# System deps for scientific libs and OpenCV
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
+    libgl1 \
+    libglx-mesa0 \
+    libglib2.0-0t64 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
