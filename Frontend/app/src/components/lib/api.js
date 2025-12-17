@@ -1,5 +1,5 @@
-// const API = "http://rag.cmti.online";
-const API = "http://rag.cmti.online";
+// const API = "https://rag.cmti.online";
+const API = "https://rag.cmti.online";
 
 export async function uploadPDF(file) {
   const fd = new FormData();

@@ -24,7 +24,7 @@ export const AuthProvider = ({ children }) => {
       formData.append('username', username);
       formData.append('password', password);
 
-      const response = await axios.post('http://rag.cmti.online/token', formData);
+      const response = await axios.post('https://rag.cmti.online/token', formData);
       const { access_token } = response.data;
 
       localStorage.setItem('token', access_token);
@@ -43,7 +43,7 @@ export const AuthProvider = ({ children }) => {
       formData.append('username', username);
       formData.append('password', password);
 
-      await axios.post('http://rag.cmti.online/register', formData);
+      await axios.post('https://rag.cmti.online/register', formData);
       return true;
     } catch (error) {
       console.error("Registration failed", error);
