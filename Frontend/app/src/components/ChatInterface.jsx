@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { Send, Upload, FileText, LogOut, ChevronRight, MessageSquare, Plus, X, Globe, ExternalLink, Bot, User } from 'lucide-react';
+import { Send, Upload, FileText, LogOut, ChevronRight, MessageSquare, Plus, X, Globe, ExternalLink, Bot, User, Activity } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import PDFViewer from './PDFViewer';
@@ -17,6 +17,7 @@ const ChatInterface = () => {
   const [activePage, setActivePage] = useState(1);
   const [documents, setDocuments] = useState([]);
   const [webSearchMode, setWebSearchMode] = useState(false); // Web search toggle
+  const [diagnosticMode, setDiagnosticMode] = useState(false); // Diagnostic mode toggle
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -25,7 +26,7 @@ const ChatInterface = () => {
 
   const fetchDocuments = async () => {
     try {
-      const response = await axios.get('https://rag.cmti.online/documents', {
+      const response = await axios.get('http://172.18.7.89:6569/documents', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       setDocuments(response.data);
@@ -51,7 +52,7 @@ const ChatInterface = () => {
     formData.append('file', file);
 
     try {
-      const response = await axios.post('https://rag.cmti.online/ingest', formData, {
+      const response = await axios.post('http://172.18.7.89:6569/ingest', formData, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'multipart/form-data'
@@ -92,9 +93,128 @@ const ChatInterface = () => {
     try {
       let response;
 
-      if (webSearchMode) {
+      if (diagnosticMode) {
+        // Diagnostic mode
+        response = await axios.post('http://172.18.7.89:6569/diagnose', null, {
+          params: { question: currentInput },
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        // Format diagnostic response to Markdown
+        const result = response.data.result;
+        const type = response.data.type;
+        let markdownResponse = "";
+
+        if (type === "diagnostic") {
+          markdownResponse += `### 🩺 Diagnostic Report\n\n`;
+          if (result.likely_causes && result.likely_causes.length > 0) {
+            markdownResponse += `#### 🔍 Likely Causes\n`;
+            result.likely_causes.forEach(cause => {
+              markdownResponse += `- **${cause.cause}** (${(cause.probability * 100).toFixed(0)}%)\n`;
+              markdownResponse += `  - *Solution:* ${cause.solution}\n`;
+              markdownResponse += `  - *Evidence:* ${cause.evidence}\n`;
+            });
+            markdownResponse += `\n`;
+          }
+
+          if (result.immediate_actions && result.immediate_actions.length > 0) {
+            markdownResponse += `#### ⚡ Immediate Actions\n`;
+            result.immediate_actions.forEach(action => {
+              markdownResponse += `- ${action}\n`;
+            });
+            markdownResponse += `\n`;
+          }
+
+          if (result.safety_warnings && result.safety_warnings.length > 0) {
+            markdownResponse += `#### ⚠️ Safety Warnings\n`;
+            result.safety_warnings.forEach(warning => {
+              markdownResponse += `- ${warning}\n`;
+            });
+            markdownResponse += `\n`;
+          }
+
+          if (result.confidence) {
+            markdownResponse += `\n**Confidence Score:** ${(result.confidence * 100).toFixed(0)}%`;
+          }
+
+        } else if (type === "compliance") {
+          markdownResponse += `### 🛡️ Compliance & Safety Report\n\n`;
+          markdownResponse += `**Assessment:** ${result.assessment}\n\n`;
+
+          if (result.standards && result.standards.length > 0) {
+            markdownResponse += `#### 📜 Applicable Standards\n`;
+            result.standards.forEach(std => markdownResponse += `- ${std}\n`);
+            markdownResponse += `\n`;
+          }
+
+          if (result.required_ppe && result.required_ppe.length > 0) {
+            markdownResponse += `#### 🦺 Required PPE\n`;
+            result.required_ppe.forEach(ppe => markdownResponse += `- [ ] ${ppe}\n`);
+            markdownResponse += `\n`;
+          }
+
+          if (result.risks && result.risks.length > 0) {
+            markdownResponse += `#### ⚠️ Potential Risks\n`;
+            result.risks.forEach(risk => markdownResponse += `- ${risk}\n`);
+            markdownResponse += `\n`;
+          }
+
+          if (result.recommendations && result.recommendations.length > 0) {
+            markdownResponse += `#### 💡 Recommendations\n`;
+            result.recommendations.forEach(rec => markdownResponse += `- ${rec}\n`);
+          }
+
+        } else if (type === "training") {
+          markdownResponse += `### 🎓 Training Module: ${result.module_title}\n\n`;
+
+          if (result.learning_objectives && result.learning_objectives.length > 0) {
+            markdownResponse += `#### 🎯 Learning Objectives\n`;
+            result.learning_objectives.forEach(obj => markdownResponse += `- ${obj}\n`);
+            markdownResponse += `\n`;
+          }
+
+          if (result.steps && result.steps.length > 0) {
+            markdownResponse += `#### 📝 Procedure\n`;
+            result.steps.forEach(step => {
+              markdownResponse += `**Step ${step.step}:** ${step.instruction}\n`;
+              if (step.warning) markdownResponse += `> ⚠️ *Warning: ${step.warning}*\n`;
+              markdownResponse += `\n`;
+            });
+          }
+
+          if (result.quiz && result.quiz.length > 0) {
+            markdownResponse += `#### 🧠 Knowledge Check\n`;
+            result.quiz.forEach((q, idx) => {
+              markdownResponse += `**Q${idx + 1}: ${q.question}**\n`;
+              q.options.forEach(opt => {
+                const isCorrect = opt === q.correct_answer;
+                // We display the answer key for self-study
+                markdownResponse += `- [${isCorrect ? 'x' : ' '}] ${opt}\n`;
+              });
+              markdownResponse += `\n`;
+            });
+          }
+        } else {
+          // Fallback for general or unknown types
+          markdownResponse = result.message || "No structured data available.";
+        }
+
+        // Mock response structure to fit existing UI
+        response = {
+          data: {
+            response: {
+              answer: markdownResponse,
+              citations: result.document_refs ? result.document_refs.map(ref => ({
+                page: ref.page,
+                domain: ref.filename
+              })) : []
+            }
+          }
+        };
+
+      } else if (webSearchMode) {
         // Web search mode
-        response = await axios.post('https://rag.cmti.online/web-query', null, {
+        response = await axios.post('http://172.18.7.89:6569/web-query', null, {
           params: { question: currentInput },
           headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -104,7 +224,7 @@ const ChatInterface = () => {
         if (activeDocId) {
           params.doc_id = activeDocId;
         }
-        response = await axios.post('https://rag.cmti.online/query', null, {
+        response = await axios.post('http://172.18.7.89:6569/query', null, {
           params: params,
           headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -117,7 +237,8 @@ const ChatInterface = () => {
           role: 'assistant',
           content: response.data.response.answer,
           citations: response.data.response.citations,
-          isWebSearch: webSearchMode
+          isWebSearch: webSearchMode,
+          isDiagnostic: diagnosticMode
         }];
       });
       scrollToBottom();
@@ -138,7 +259,7 @@ const ChatInterface = () => {
     setActiveDocId(doc.id);
 
     try {
-      const response = await axios.get(`https://rag.cmti.online/documents/${doc.id}/file`, {
+      const response = await axios.get(`http://172.18.7.89:6569/documents/${doc.id}/file`, {
         headers: { 'Authorization': `Bearer ${token}` },
         responseType: 'blob'
       });
@@ -274,6 +395,9 @@ const ChatInterface = () => {
                   <div className="px-3 py-1.5 bg-white border border-stone-200 rounded-lg text-xs text-stone-600 shadow-sm">
                     🌐 Web search
                   </div>
+                  <div className="px-3 py-1.5 bg-white border border-stone-200 rounded-lg text-xs text-stone-600 shadow-sm">
+                    🩺 Diagnostic Mode
+                  </div>
                 </div>
               </div>
             )}
@@ -285,15 +409,14 @@ const ChatInterface = () => {
                     <Bot size={16} className="text-white" />
                   </div>
                 )}
-                
+
                 <div
-                  className={`max-w-[85%] ${msg.role === 'user' ? 'order-1' : ''} ${
-                    msg.role === 'user'
+                  className={`max-w-[85%] ${msg.role === 'user' ? 'order-1' : ''} ${msg.role === 'user'
                       ? 'bg-gradient-to-br from-stone-900 to-stone-800 text-white rounded-2xl rounded-tr-sm shadow-lg'
                       : msg.role === 'system'
                         ? 'bg-stone-50 text-stone-500 text-xs border border-stone-100 w-full text-center py-2 rounded-lg'
                         : 'bg-white text-stone-800 rounded-2xl rounded-tl-sm border border-stone-200 shadow-md hover:shadow-lg transition-shadow'
-                  }`}
+                    }`}
                 >
                   {msg.role === 'user' && (
                     <div className="flex items-center gap-2 px-4 pt-3 pb-2">
@@ -451,20 +574,46 @@ const ChatInterface = () => {
                   <span className="font-semibold">Web Search Mode Active</span>
                 </div>
               )}
-              <div className={`flex items-center gap-2 bg-white rounded-2xl p-2 border transition-all shadow-lg hover:shadow-xl ${webSearchMode
-                ? 'border-blue-300 ring-2 ring-blue-100'
-                : 'border-stone-200 focus-within:border-stone-400 focus-within:ring-2 focus-within:ring-stone-100'
+              {diagnosticMode && (
+                <div className="mb-3 flex items-center gap-2 text-xs text-red-600 bg-red-50 px-3 py-1.5 rounded-lg border border-red-200 animate-fade-in">
+                  <Activity size={14} className="animate-pulse" />
+                  <span className="font-semibold">Diagnostic Mode Active</span>
+                </div>
+              )}
+              <div className={`flex items-center gap-2 bg-white rounded-2xl p-2 border transition-all shadow-lg hover:shadow-xl ${webSearchMode ? 'border-blue-300 ring-2 ring-blue-100' :
+                  diagnosticMode ? 'border-red-300 ring-2 ring-red-100' :
+                    'border-stone-200 focus-within:border-stone-400 focus-within:ring-2 focus-within:ring-stone-100'
                 }`}>
                 <input
                   type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
-                  placeholder={webSearchMode ? "Search the web..." : "Ask a question or type your message..."}
+                  placeholder={
+                    webSearchMode ? "Search the web..." :
+                      diagnosticMode ? "Describe the symptoms (e.g., 'Motor humming')..." :
+                        "Ask a question or type your message..."
+                  }
                   className="flex-1 bg-transparent border-none outline-none text-sm text-stone-900 px-4 py-2.5 placeholder:text-stone-400"
                 />
                 <button
-                  onClick={() => setWebSearchMode(!webSearchMode)}
+                  onClick={() => {
+                    setDiagnosticMode(!diagnosticMode);
+                    if (!diagnosticMode) setWebSearchMode(false);
+                  }}
+                  className={`p-2.5 rounded-xl transition-all ${diagnosticMode
+                    ? 'bg-gradient-to-br from-red-100 to-orange-100 text-red-600 hover:from-red-200 hover:to-orange-200 shadow-sm'
+                    : 'bg-stone-100 text-stone-500 hover:bg-stone-200'
+                    }`}
+                  title={diagnosticMode ? "Exit Diagnostic Mode" : "Enter Diagnostic Mode"}
+                >
+                  <Activity size={18} strokeWidth={2} />
+                </button>
+                <button
+                  onClick={() => {
+                    setWebSearchMode(!webSearchMode);
+                    if (!webSearchMode) setDiagnosticMode(false);
+                  }}
                   className={`p-2.5 rounded-xl transition-all ${webSearchMode
                     ? 'bg-gradient-to-br from-blue-100 to-indigo-100 text-blue-600 hover:from-blue-200 hover:to-indigo-200 shadow-sm'
                     : 'bg-stone-100 text-stone-500 hover:bg-stone-200'

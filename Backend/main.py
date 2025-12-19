@@ -19,6 +19,10 @@ from auth import (
     get_user_documents, get_document_owner, DB_NAME
 )
 from web_search import process_web_search, find_relevant_chunks
+from agents.orchestrator import Orchestrator
+from agents.master_agent import MasterAgent
+from agents.compliance_agent import ComplianceAgent
+from agents.training_agent import TrainingAgent
 
 load_dotenv()
 
@@ -449,6 +453,203 @@ Return ONLY a JSON object with this EXACT structure:
             "metadata": {
                 "model": LLM_MODEL,
                 "search_engine": "DuckDuckGo",
+            }
+        }
+        try:
+            data = json.loads(raw_output)
+        except:
+            # Clean up markdown code blocks
+            cleaned = raw_output.replace("```json", "").replace("```", "").strip()
+            data = json.loads(cleaned)
+        
+        return {
+            "response": data,
+            "chunks_used": top_chunks,
+            "metadata": {
+                "model": LLM_MODEL,
+                "chunks_retrieved": len(top_chunks),
+                "document_specific": doc_id is not None
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating response: {str(e)}"
+        )
+
+
+
+
+
+        
+
+@app.post("/web-query")
+async def web_query(question: str, current_user: dict = Depends(get_current_user)):
+    """
+    Query the web using DuckDuckGo search with intelligent scraping.
+    Returns structured response with citations similar to Perplexity.
+    
+    Features:
+    - Free web search via DuckDuckGo (no API key required)
+    - Reliable web scraping with quality filtering
+    - Semantic search for relevant content
+    - Structured citations with URLs
+    """
+    try:
+        # Step 1: Search web and extract content
+        web_data = await process_web_search(query=question, num_results=6)
+        
+        if 'error' in web_data or not web_data['chunks']:
+            return {
+                "response": {
+                    "answer": "I couldn't find relevant information on the web for your query. This might be because:\n- The search didn't return accessible results\n- Websites blocked scraping\n- The query might be too specific or misspelled\n\nPlease try rephrasing your question.",
+                    "citations": []
+                },
+                "sources_used": 0,
+                "metadata": {
+                    "error": web_data.get('error', 'Unknown error')
+                }
+            }
+        
+        # Step 2: Find most relevant chunks
+        relevant_chunks = find_relevant_chunks(
+            query=question,
+            chunks=web_data['chunks'],
+            sources=web_data['sources'],
+            embeddings=web_data['embeddings'],
+            k=8  # Get more chunks for better context
+        )
+        
+        if not relevant_chunks:
+            return {
+                "response": {
+                    "answer": "No relevant information found in the scraped content.",
+                    "citations": []
+                },
+                "sources_used": 0
+            }
+        
+        # Step 3: Build context for LLM
+        context_parts = []
+        sources_map = {}
+        
+        for i, chunk_data in enumerate(relevant_chunks):
+            source = chunk_data['source']
+            url = source['url']
+            
+            # Track unique sources
+            if url not in sources_map:
+                snippet = source.get('snippet') or chunk_data['text'][:200]
+                sources_map[url] = {
+                    'url': url,
+                    'title': source['title'],
+                    'domain': source['domain'],
+                    'snippet': snippet
+                }
+            
+            # Add context with source reference
+            context_parts.append(
+                f"[Source {i+1}] {source['title']} ({source['domain']}):\n{chunk_data['text']}\n"
+            )
+        
+        context = "\n---\n\n".join(context_parts)
+        
+        # Step 4: Generate response with LLM
+        prompt = f"""You are a helpful AI search assistant. Answer the user's question based on the web search results provided below.
+
+USER QUESTION:
+{question}
+
+WEB SEARCH RESULTS:
+{context}
+
+INSTRUCTIONS:
+1. Provide a comprehensive, well-structured answer based on the search results
+2. Synthesize information from multiple sources when possible
+3. Be accurate and cite your sources naturally in the text
+4. If the search results don't fully answer the question, acknowledge this
+5. Use clear, concise language
+6. Format your answer using Markdown syntax for better readability:
+   - Use **bold** for emphasis and key points
+   - Use *italic* for subtle emphasis
+   - Use bullet points (- or *) for lists
+   - Use numbered lists (1., 2., etc.) for ordered items
+   - Use code blocks (```language) for code snippets or technical examples
+   - Use `inline code` for technical terms, product names, or specific values
+   - Use ## for section headings to organize longer answers
+   - Use > for blockquotes when citing specific information
+   - Use tables when presenting structured data or comparisons
+   - Use horizontal rules (---) to separate major sections
+
+IMPORTANT: Return your answer in Markdown format. Make it well-structured, visually appealing, and easy to read.
+
+Return ONLY a JSON object with this EXACT structure:
+{{
+  "answer": "Your detailed markdown-formatted answer here. Reference sources like 'According to [source title]...' naturally in your text.",
+  "key_sources": [
+    {{"url": "https://example.com", "title": "Page Title", "relevance": "Brief note on what this source contributed"}}
+  ]
+}}"""
+        
+        response = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3  # Lower temperature for more factual responses
+        )
+        
+        raw_output = response.choices[0].message.content.strip()
+        
+        # Parse JSON response
+        try:
+            # Remove markdown code blocks if present
+            if raw_output.startswith('```'):
+                raw_output = raw_output.split('```')[1]
+                if raw_output.startswith('json'):
+                    raw_output = raw_output[4:]
+                raw_output = raw_output.strip()
+            
+            data = json.loads(raw_output)
+        except json.JSONDecodeError as e:
+            print(f"JSON parse error: {e}\nRaw output: {raw_output}")
+            # Fallback: return raw text
+            return {
+                "response": {
+                    "answer": raw_output,
+                    "citations": list(sources_map.values())[:3]
+                },
+                "sources_used": len(sources_map),
+                "metadata": {
+                    "warning": "LLM returned non-JSON response"
+                }
+            }
+        
+        # Enrich citations
+        key_sources = data.get('key_sources', [])
+        enriched_citations = []
+        
+        for citation in key_sources[:5]:  # Limit to top 5 sources
+            url = citation.get('url', '')
+            if url in sources_map:
+                enriched_citations.append({
+                    **sources_map[url],
+                    'relevance': citation.get('relevance', '')
+                })
+        
+        # If no key sources, use top 3 from sources_map
+        if not enriched_citations:
+            enriched_citations = list(sources_map.values())[:3]
+        
+        return {
+            "response": {
+                "answer": data.get('answer', ''),
+                "citations": enriched_citations
+            },
+            "sources_used": len(sources_map),
+            "chunks_analyzed": len(relevant_chunks),
+            "metadata": {
+                "model": LLM_MODEL,
+                "search_engine": "DuckDuckGo",
                 "total_sources_found": web_data.get('total_sources', 0),
                 "successful_crawls": web_data.get('successful_crawls', 0)
             }
@@ -459,4 +660,68 @@ Return ONLY a JSON object with this EXACT structure:
         raise HTTPException(
             status_code=500,
             detail=f"Error processing web query: {str(e)}"
+        )
+
+@app.post("/diagnose")
+async def diagnose(question: str, current_user: dict = Depends(get_current_user)):
+    """
+    Multi-Agent Diagnostic Endpoint.
+    
+    Orchestrates multiple specialized AI agents to provide a comprehensive diagnosis:
+    1. Intent Detection (Orchestrator)
+    2. Parallel Execution:
+       - Symptom Extraction
+       - Sensor Data Analysis (Real-time/Mock)
+       - Document Retrieval (RAG)
+       - Historical Issue Matching
+    3. Synthesis (Master Agent)
+    """
+    try:
+        # Initialize Orchestrator
+        orchestrator = Orchestrator()
+        
+        # Step 1: Detect Intent
+        intent = await orchestrator.detect_intent(question)
+        
+        if intent == "diagnostic":
+            # Step 2: Run Master Diagnostic Agent
+            master_agent = MasterAgent()
+            diagnosis = await master_agent.diagnose(question, current_user["id"])
+            
+            return {
+                "type": "diagnostic",
+                "result": diagnosis
+            }
+            
+        elif intent == "compliance":
+            # Run Compliance Agent
+            compliance_agent = ComplianceAgent()
+            report = await compliance_agent.check_compliance(question, current_user["id"])
+            
+            return {
+                "type": "compliance",
+                "result": report
+            }
+            
+        elif intent == "training":
+            # Run Training Agent
+            training_agent = TrainingAgent()
+            module = await training_agent.generate_training(question, current_user["id"])
+            
+            return {
+                "type": "training",
+                "result": module
+            }
+            
+        else:
+            # Fallback to standard RAG or generic response
+            return {
+                "type": "general",
+                "message": "Query classified as general. Please use the standard query endpoint for general questions."
+            }
+            
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error in diagnostic process: {str(e)}"
         )
