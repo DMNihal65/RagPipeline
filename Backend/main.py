@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, status
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, status, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import FileResponse
@@ -23,11 +23,25 @@ from agents.orchestrator import Orchestrator
 from agents.master_agent import MasterAgent
 from agents.compliance_agent import ComplianceAgent
 from agents.training_agent import TrainingAgent
+from chat_history import ChatHistoryManager
+from gtts import gTTS
+import tempfile
+import base64
+import uuid
 
 load_dotenv()
 
 # Initialize User DB
 init_db()
+
+# Initialize Chat History Manager
+chat_history_manager = ChatHistoryManager()
+
+# Global Progress Store
+# upload_progress = {}
+
+# def update_progress(doc_id, status, percentage):
+#     upload_progress[doc_id] = {"status": status, "percentage": percentage}
 
 
 # Use Groq client
@@ -725,3 +739,79 @@ async def diagnose(question: str, current_user: dict = Depends(get_current_user)
             status_code=500,
             detail=f"Error in diagnostic process: {str(e)}"
         )
+# ----- Chat History Endpoints -----
+
+@app.get("/history/sessions")
+async def get_sessions(current_user: dict = Depends(get_current_user)):
+    return chat_history_manager.get_sessions(str(current_user["id"]))
+
+@app.post("/history/sessions")
+async def create_session(title: str = "New Chat", current_user: dict = Depends(get_current_user)):
+    session_id = chat_history_manager.create_session(str(current_user["id"]), title)
+    return {"session_id": session_id}
+
+@app.get("/history/sessions/{session_id}/messages")
+async def get_messages(session_id: str, current_user: dict = Depends(get_current_user)):
+    # In a real app, verify user owns session
+    return chat_history_manager.get_messages(session_id)
+
+@app.post("/history/sessions/{session_id}/messages")
+async def add_message(session_id: str, message: dict, current_user: dict = Depends(get_current_user)):
+    # message = {"role": "user", "content": "...", "citations": [...]}
+    chat_history_manager.add_message(
+        session_id, 
+        message["role"], 
+        message["content"], 
+        message.get("citations")
+    )
+    return {"status": "success"}
+
+@app.delete("/history/sessions/{session_id}")
+async def delete_session(session_id: str, current_user: dict = Depends(get_current_user)):
+    chat_history_manager.delete_session(session_id)
+    return {"status": "success"}
+
+# ----- Voice Endpoints -----
+
+@app.post("/voice/transcribe")
+async def transcribe_audio(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
+    try:
+        # Save temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+        
+        # Use Groq for transcription
+        with open(tmp_path, "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(
+                file=(tmp_path, audio_file.read()),
+                model="distil-whisper-large-v3-en",
+                response_format="json",
+                language="en",
+                temperature=0.0
+            )
+        
+        os.unlink(tmp_path)
+        return {"text": transcription.text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/voice/speak")
+async def text_to_speech(text: str = Form(...), current_user: dict = Depends(get_current_user)):
+    try:
+        # Use gTTS
+        tts = gTTS(text=text, lang='en')
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+            tts.save(tmp.name)
+            tmp_path = tmp.name
+            
+        return FileResponse(tmp_path, media_type="audio/mpeg", filename="speech.mp3")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ----- Progress Endpoint -----
+
+# @app.get("/ingest/progress/{doc_id}")
+# async def get_ingest_progress(doc_id: str):
+#     return upload_progress.get(doc_id, {"status": "unknown", "percentage": 0})

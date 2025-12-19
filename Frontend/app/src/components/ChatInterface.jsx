@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { Send, Upload, FileText, LogOut, ChevronRight, MessageSquare, Plus, X, Globe, ExternalLink, Bot, User, Activity } from 'lucide-react';
+import { Send, Upload, FileText, LogOut, ChevronRight, MessageSquare, Plus, X, Globe, ExternalLink, Bot, User, Activity, Mic, Volume2, Trash2, History, MoreHorizontal, StopCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import PDFViewer from './PDFViewer';
@@ -12,17 +12,32 @@ const ChatInterface = () => {
   const [input, setInput] = useState('');
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
-  const [activePdf, setActivePdf] = useState(null); // For viewing
-  const [activeDocId, setActiveDocId] = useState(null); // For chatting
+  const [activePdf, setActivePdf] = useState(null);
+  const [activeDocId, setActiveDocId] = useState(null);
   const [activePage, setActivePage] = useState(1);
   const [documents, setDocuments] = useState([]);
-  const [webSearchMode, setWebSearchMode] = useState(false); // Web search toggle
-  const [diagnosticMode, setDiagnosticMode] = useState(false); // Diagnostic mode toggle
+  const [sessions, setSessions] = useState([]);
+  const [currentSessionId, setCurrentSessionId] = useState(null);
+  const [webSearchMode, setWebSearchMode] = useState(false);
+  const [diagnosticMode, setDiagnosticMode] = useState(false);
+  const [sidebarMode, setSidebarMode] = useState('documents'); // 'documents' or 'history'
+  const [isRecording, setIsRecording] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(null); // Message ID being spoken
+
   const messagesEndRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
 
   useEffect(() => {
     fetchDocuments();
+    fetchSessions();
   }, []);
+
+  useEffect(() => {
+    if (currentSessionId) {
+      loadSessionMessages(currentSessionId);
+    }
+  }, [currentSessionId]);
 
   const fetchDocuments = async () => {
     try {
@@ -32,6 +47,73 @@ const ChatInterface = () => {
       setDocuments(response.data);
     } catch (error) {
       console.error("Failed to fetch documents", error);
+    }
+  };
+
+  const fetchSessions = async () => {
+    try {
+      const response = await axios.get('http://172.18.7.89:6569/history/sessions', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setSessions(response.data);
+    } catch (error) {
+      console.error("Failed to fetch sessions", error);
+    }
+  };
+
+  const createNewSession = async () => {
+    try {
+      const response = await axios.post('http://172.18.7.89:6569/history/sessions', {}, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setSessions(prev => [{ id: response.data.session_id, title: "New Chat", updated_at: new Date().toISOString() }, ...prev]);
+      setCurrentSessionId(response.data.session_id);
+      setMessages([]);
+      setActivePdf(null);
+      setActiveDocId(null);
+    } catch (error) {
+      console.error("Failed to create session", error);
+    }
+  };
+
+  const loadSessionMessages = async (sessionId) => {
+    try {
+      const response = await axios.get(`http://172.18.7.89:6569/history/sessions/${sessionId}/messages`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setMessages(response.data);
+    } catch (error) {
+      console.error("Failed to load messages", error);
+    }
+  };
+
+  const deleteSession = async (e, sessionId) => {
+    e.stopPropagation();
+    try {
+      await axios.delete(`http://172.18.7.89:6569/history/sessions/${sessionId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setSessions(prev => prev.filter(s => s.id !== sessionId));
+      if (currentSessionId === sessionId) {
+        setCurrentSessionId(null);
+        setMessages([]);
+      }
+    } catch (error) {
+      console.error("Failed to delete session", error);
+    }
+  };
+
+  const saveMessageToHistory = async (role, content, citations = null) => {
+    if (!currentSessionId) return;
+    try {
+      await axios.post(`http://172.18.7.89:6569/history/sessions/${currentSessionId}/messages`, {
+        role, content, citations
+      }, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      fetchSessions(); // Update title/timestamp
+    } catch (error) {
+      console.error("Failed to save message", error);
     }
   };
 
@@ -48,6 +130,7 @@ const ChatInterface = () => {
   const handleUpload = async () => {
     if (!file) return;
     setUploading(true);
+
     const formData = new FormData();
     formData.append('file', file);
 
@@ -59,33 +142,142 @@ const ChatInterface = () => {
         }
       });
 
-      // Refresh doc list and select the new doc
+      const docId = response.data.doc_id;
       await fetchDocuments();
-      setActiveDocId(response.data.doc_id);
-      setActivePdf(file); // View it immediately
+      setActiveDocId(docId);
+      setActivePdf(file);
 
-      setMessages(prev => [...prev, {
-        role: 'system',
-        content: `File "${file.name}" processed successfully. You are now chatting with this document.`
-      }]);
+      const sysMsg = `File "${file.name}" processed successfully.`;
+      setMessages(prev => [...prev, { role: 'system', content: sysMsg }]);
+      if (currentSessionId) saveMessageToHistory('system', sysMsg);
+
       setFile(null);
+      setUploading(false);
+
     } catch (error) {
       console.error("Upload failed", error);
       setMessages(prev => [...prev, { role: 'system', content: 'Failed to upload file.' }]);
-    } finally {
       setUploading(false);
+    }
+  };
+
+  const startRecording = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert("Audio recording is not supported in this browser or context. Please use HTTPS or localhost.");
+      return;
+    }
+
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const hasAudioInput = devices.some(device => device.kind === 'audioinput');
+
+      if (!hasAudioInput) {
+        alert("No microphone found. Please connect a microphone and try again.");
+        return;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorderRef.current = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorderRef.current.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+        const formData = new FormData();
+        formData.append('file', audioBlob, 'voice.wav');
+
+        try {
+          const response = await axios.post('http://172.18.7.89:6569/voice/transcribe', formData, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'multipart/form-data'
+            }
+          });
+          setInput(response.data.text);
+        } catch (error) {
+          console.error("Transcription failed", error);
+          setMessages(prev => [...prev, { role: 'system', content: 'Voice transcription failed.' }]);
+        }
+
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorderRef.current.start();
+      setIsRecording(true);
+    } catch (error) {
+      console.error("Error accessing microphone", error);
+      if (error.name === 'NotFoundError') {
+        alert("No microphone found. Please ensure a microphone is connected.");
+      } else if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        alert("Microphone permission denied. Please allow microphone access in your browser settings.");
+      } else {
+        alert(`Error accessing microphone: ${error.message}. If you are not using localhost, ensure you are using HTTPS.`);
+      }
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const handleSpeak = async (text, msgId) => {
+    if (isSpeaking === msgId) {
+      setIsSpeaking(null);
+      return;
+    }
+
+    try {
+      setIsSpeaking(msgId);
+      const formData = new FormData();
+      formData.append('text', text);
+
+      const response = await axios.post('http://172.18.7.89:6569/voice/speak', formData, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        responseType: 'blob'
+      });
+
+      const audioUrl = URL.createObjectURL(response.data);
+      const audio = new Audio(audioUrl);
+      audio.onended = () => setIsSpeaking(null);
+      audio.play();
+    } catch (error) {
+      console.error("TTS failed", error);
+      setIsSpeaking(null);
     }
   };
 
   const handleSend = async () => {
     if (!input.trim()) return;
 
+    let sessionId = currentSessionId;
+    if (!sessionId) {
+      try {
+        const res = await axios.post('http://172.18.7.89:6569/history/sessions', {}, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        sessionId = res.data.session_id;
+        setCurrentSessionId(sessionId);
+        setSessions(prev => [{ id: sessionId, title: input.substring(0, 30), updated_at: new Date().toISOString() }, ...prev]);
+      } catch (e) {
+        console.error("Failed to auto-create session", e);
+      }
+    }
+
     const userMessage = { role: 'user', content: input };
     setMessages(prev => [...prev, userMessage]);
+    if (sessionId) saveMessageToHistory('user', input);
+
     const currentInput = input;
     setInput('');
 
-    // Add loading message
     const loadingMessage = { role: 'assistant', content: 'Thinking...', isLoading: true };
     setMessages(prev => [...prev, loadingMessage]);
     scrollToBottom();
@@ -94,112 +286,73 @@ const ChatInterface = () => {
       let response;
 
       if (diagnosticMode) {
-        // Diagnostic mode
         response = await axios.post('http://172.18.7.89:6569/diagnose', null, {
           params: { question: currentInput },
           headers: { 'Authorization': `Bearer ${token}` }
         });
 
-        // Format diagnostic response to Markdown
         const result = response.data.result;
         const type = response.data.type;
         let markdownResponse = "";
 
         if (type === "diagnostic") {
           markdownResponse += `### 🩺 Diagnostic Report\n\n`;
-          if (result.likely_causes && result.likely_causes.length > 0) {
+          if (result.likely_causes?.length > 0) {
             markdownResponse += `#### 🔍 Likely Causes\n`;
             result.likely_causes.forEach(cause => {
-              markdownResponse += `- **${cause.cause}** (${(cause.probability * 100).toFixed(0)}%)\n`;
-              markdownResponse += `  - *Solution:* ${cause.solution}\n`;
-              markdownResponse += `  - *Evidence:* ${cause.evidence}\n`;
+              markdownResponse += `- **${cause.cause}** (${(cause.probability * 100).toFixed(0)}%)\n  - *Solution:* ${cause.solution}\n  - *Evidence:* ${cause.evidence}\n`;
             });
             markdownResponse += `\n`;
           }
-
-          if (result.immediate_actions && result.immediate_actions.length > 0) {
+          if (result.immediate_actions?.length > 0) {
             markdownResponse += `#### ⚡ Immediate Actions\n`;
-            result.immediate_actions.forEach(action => {
-              markdownResponse += `- ${action}\n`;
-            });
+            result.immediate_actions.forEach(action => markdownResponse += `- ${action}\n`);
             markdownResponse += `\n`;
           }
-
-          if (result.safety_warnings && result.safety_warnings.length > 0) {
+          if (result.safety_warnings?.length > 0) {
             markdownResponse += `#### ⚠️ Safety Warnings\n`;
-            result.safety_warnings.forEach(warning => {
-              markdownResponse += `- ${warning}\n`;
-            });
-            markdownResponse += `\n`;
+            result.safety_warnings.forEach(warning => markdownResponse += `- ${warning}\n`);
           }
-
-          if (result.confidence) {
-            markdownResponse += `\n**Confidence Score:** ${(result.confidence * 100).toFixed(0)}%`;
-          }
-
         } else if (type === "compliance") {
-          markdownResponse += `### 🛡️ Compliance & Safety Report\n\n`;
-          markdownResponse += `**Assessment:** ${result.assessment}\n\n`;
-
-          if (result.standards && result.standards.length > 0) {
+          markdownResponse += `### 🛡️ Compliance & Safety Report\n\n**Assessment:** ${result.assessment}\n\n`;
+          if (result.standards?.length > 0) {
             markdownResponse += `#### 📜 Applicable Standards\n`;
             result.standards.forEach(std => markdownResponse += `- ${std}\n`);
-            markdownResponse += `\n`;
           }
-
-          if (result.required_ppe && result.required_ppe.length > 0) {
-            markdownResponse += `#### 🦺 Required PPE\n`;
+          if (result.required_ppe?.length > 0) {
+            markdownResponse += `\n#### 🦺 Required PPE\n`;
             result.required_ppe.forEach(ppe => markdownResponse += `- [ ] ${ppe}\n`);
-            markdownResponse += `\n`;
           }
-
-          if (result.risks && result.risks.length > 0) {
-            markdownResponse += `#### ⚠️ Potential Risks\n`;
+          if (result.risks?.length > 0) {
+            markdownResponse += `\n#### ⚠️ Potential Risks\n`;
             result.risks.forEach(risk => markdownResponse += `- ${risk}\n`);
-            markdownResponse += `\n`;
           }
-
-          if (result.recommendations && result.recommendations.length > 0) {
-            markdownResponse += `#### 💡 Recommendations\n`;
-            result.recommendations.forEach(rec => markdownResponse += `- ${rec}\n`);
-          }
-
         } else if (type === "training") {
           markdownResponse += `### 🎓 Training Module: ${result.module_title}\n\n`;
-
-          if (result.learning_objectives && result.learning_objectives.length > 0) {
+          if (result.learning_objectives?.length > 0) {
             markdownResponse += `#### 🎯 Learning Objectives\n`;
             result.learning_objectives.forEach(obj => markdownResponse += `- ${obj}\n`);
-            markdownResponse += `\n`;
           }
-
-          if (result.steps && result.steps.length > 0) {
-            markdownResponse += `#### 📝 Procedure\n`;
+          if (result.steps?.length > 0) {
+            markdownResponse += `\n#### 📝 Procedure\n`;
             result.steps.forEach(step => {
               markdownResponse += `**Step ${step.step}:** ${step.instruction}\n`;
               if (step.warning) markdownResponse += `> ⚠️ *Warning: ${step.warning}*\n`;
               markdownResponse += `\n`;
             });
           }
-
-          if (result.quiz && result.quiz.length > 0) {
+          if (result.quiz?.length > 0) {
             markdownResponse += `#### 🧠 Knowledge Check\n`;
             result.quiz.forEach((q, idx) => {
               markdownResponse += `**Q${idx + 1}: ${q.question}**\n`;
-              q.options.forEach(opt => {
-                const isCorrect = opt === q.correct_answer;
-                // We display the answer key for self-study
-                markdownResponse += `- [${isCorrect ? 'x' : ' '}] ${opt}\n`;
-              });
+              q.options.forEach(opt => markdownResponse += `- [${opt === q.correct_answer ? 'x' : ' '}] ${opt}\n`);
               markdownResponse += `\n`;
             });
           }
         } else {
-          // Fallback for general or unknown types
           markdownResponse = result.message || "No structured data available.";
         }
 
-        // Mock response structure to fit existing UI
         response = {
           data: {
             response: {
@@ -213,33 +366,30 @@ const ChatInterface = () => {
         };
 
       } else if (webSearchMode) {
-        // Web search mode
         response = await axios.post('http://172.18.7.89:6569/web-query', null, {
           params: { question: currentInput },
           headers: { 'Authorization': `Bearer ${token}` }
         });
       } else {
-        // Document search mode
         const params = { question: currentInput };
-        if (activeDocId) {
-          params.doc_id = activeDocId;
-        }
+        if (activeDocId) params.doc_id = activeDocId;
         response = await axios.post('http://172.18.7.89:6569/query', null, {
           params: params,
           headers: { 'Authorization': `Bearer ${token}` }
         });
       }
 
-      // Remove loading message and add actual response
       setMessages(prev => {
         const newMessages = prev.filter(msg => !msg.isLoading);
-        return [...newMessages, {
+        const assistantMsg = {
           role: 'assistant',
           content: response.data.response.answer,
           citations: response.data.response.citations,
           isWebSearch: webSearchMode,
           isDiagnostic: diagnosticMode
-        }];
+        };
+        if (sessionId) saveMessageToHistory('assistant', assistantMsg.content, assistantMsg.citations);
+        return [...newMessages, assistantMsg];
       });
       scrollToBottom();
     } catch (error) {
@@ -257,25 +407,16 @@ const ChatInterface = () => {
 
   const selectDocument = async (doc) => {
     setActiveDocId(doc.id);
-
     try {
       const response = await axios.get(`http://172.18.7.89:6569/documents/${doc.id}/file`, {
         headers: { 'Authorization': `Bearer ${token}` },
         responseType: 'blob'
       });
-
-      const pdfUrl = URL.createObjectURL(response.data);
-      // Create a file-like object for the viewer
       const fileObj = new File([response.data], doc.filename, { type: 'application/pdf' });
       setActivePdf(fileObj);
-
-      setMessages(prev => [...prev, {
-        role: 'system',
-        content: `Switched context to "${doc.filename}".`
-      }]);
+      setMessages(prev => [...prev, { role: 'system', content: `Switched context to "${doc.filename}".` }]);
     } catch (error) {
       console.error("Failed to load PDF", error);
-      setMessages(prev => [...prev, { role: 'system', content: `Failed to load PDF for "${doc.filename}".` }]);
     }
   };
 
@@ -293,81 +434,86 @@ const ChatInterface = () => {
           </div>
         </div>
 
-        <div className="p-3 flex-1 overflow-y-auto scroll-smooth">
-          <div className="mb-6">
-            <h3 className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-3 pl-2">Upload Document</h3>
-            <div className="flex flex-col gap-2">
-              <input
-                type="file"
-                accept=".pdf"
-                onChange={handleFileChange}
-                className="hidden"
-                id="file-upload"
-              />
-              <label
-                htmlFor="file-upload"
-                className="flex items-center justify-center px-3 py-2.5 bg-white hover:bg-stone-50 rounded-xl cursor-pointer transition-all border border-stone-200 hover:border-stone-300 hover:shadow-md text-xs text-stone-600 shadow-sm group"
-              >
-                <Plus size={14} strokeWidth={2} className="mr-2 text-stone-400 group-hover:text-stone-600 transition-colors" />
-                {file ? <span className="font-medium text-stone-900">{file.name.substring(0, 15)}...</span> : 'Select PDF'}
-              </label>
-              <button
-                onClick={handleUpload}
-                disabled={!file || uploading}
-                className={`flex items-center justify-center px-3 py-2.5 rounded-xl text-xs font-semibold transition-all shadow-sm ${!file || uploading
-                  ? 'bg-stone-100 text-stone-400 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-stone-900 to-stone-800 hover:from-stone-800 hover:to-stone-700 text-white shadow-md hover:shadow-lg'
-                  }`}
-              >
-                {uploading ? (
-                  <span className="flex items-center gap-2">
-                    <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                    Uploading...
-                  </span>
-                ) : (
-                  <>
-                    <Upload size={14} strokeWidth={2} className="mr-2" /> Upload PDF
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
+        <div className="flex border-b border-stone-200">
+          <button
+            onClick={() => setSidebarMode('documents')}
+            className={`flex-1 py-2 text-xs font-semibold ${sidebarMode === 'documents' ? 'text-stone-900 border-b-2 border-stone-900' : 'text-stone-400 hover:text-stone-600'}`}
+          >
+            Documents
+          </button>
+          <button
+            onClick={() => setSidebarMode('history')}
+            className={`flex-1 py-2 text-xs font-semibold ${sidebarMode === 'history' ? 'text-stone-900 border-b-2 border-stone-900' : 'text-stone-400 hover:text-stone-600'}`}
+          >
+            History
+          </button>
+        </div>
 
-          <div>
-            <h3 className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-3 pl-2">Your Documents</h3>
-            <div className="space-y-1">
-              <button
-                onClick={() => { setActiveDocId(null); setMessages(prev => [...prev, { role: 'system', content: 'Switched to All Documents context.' }]); }}
-                className={`w-full flex items-center px-3 py-2.5 rounded-xl text-xs transition-all ${activeDocId === null
-                  ? 'bg-gradient-to-r from-teal-50 to-blue-50 text-teal-700 shadow-sm border border-teal-200 font-semibold'
-                  : 'text-stone-500 hover:bg-white hover:text-stone-700 hover:shadow-sm'
-                  }`}
-              >
-                <MessageSquare size={14} strokeWidth={2} className={`mr-2.5 ${activeDocId === null ? 'text-teal-600' : 'text-stone-400'}`} />
-                All Documents
+        <div className="p-3 flex-1 overflow-y-auto scroll-smooth">
+          {sidebarMode === 'documents' ? (
+            <>
+              <div className="mb-6">
+                <h3 className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-3 pl-2">Upload Document</h3>
+                <div className="flex flex-col gap-2">
+                  <input type="file" accept=".pdf" onChange={handleFileChange} className="hidden" id="file-upload" />
+                  <label htmlFor="file-upload" className="flex items-center justify-center px-3 py-2.5 bg-white hover:bg-stone-50 rounded-xl cursor-pointer transition-all border border-stone-200 hover:border-stone-300 hover:shadow-md text-xs text-stone-600 shadow-sm group">
+                    <Plus size={14} strokeWidth={2} className="mr-2 text-stone-400 group-hover:text-stone-600 transition-colors" />
+                    {file ? <span className="font-medium text-stone-900">{file.name.substring(0, 15)}...</span> : 'Select PDF'}
+                  </label>
+                  <button onClick={handleUpload} disabled={!file || uploading} className={`flex items-center justify-center px-3 py-2.5 rounded-xl text-xs font-semibold transition-all shadow-sm ${!file || uploading ? 'bg-stone-100 text-stone-400 cursor-not-allowed' : 'bg-gradient-to-r from-stone-900 to-stone-800 hover:from-stone-800 hover:to-stone-700 text-white shadow-md hover:shadow-lg'}`}>
+                    {uploading ? (
+                      <span className="flex items-center gap-2">
+                        <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                        Processing...
+                      </span>
+                    ) : (
+                      <> <Upload size={14} strokeWidth={2} className="mr-2" /> Upload PDF </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-3 pl-2">Your Documents</h3>
+                <div className="space-y-1">
+                  <button onClick={() => { setActiveDocId(null); setMessages(prev => [...prev, { role: 'system', content: 'Switched to All Documents context.' }]); }} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-xs transition-all ${activeDocId === null ? 'bg-gradient-to-r from-teal-50 to-blue-50 text-teal-700 shadow-sm border border-teal-200 font-semibold' : 'text-stone-500 hover:bg-white hover:text-stone-700 hover:shadow-sm'}`}>
+                    <MessageSquare size={14} strokeWidth={2} className={`mr-2.5 ${activeDocId === null ? 'text-teal-600' : 'text-stone-400'}`} />
+                    All Documents
+                  </button>
+                  {documents.map(doc => (
+                    <button key={doc.id} onClick={() => selectDocument(doc)} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-xs transition-all ${activeDocId === doc.id ? 'bg-gradient-to-r from-teal-50 to-blue-50 text-teal-700 shadow-sm border border-teal-200 font-semibold' : 'text-stone-500 hover:bg-white hover:text-stone-700 hover:shadow-sm'}`}>
+                      <FileText size={14} strokeWidth={2} className={`mr-2.5 ${activeDocId === doc.id ? 'text-teal-600' : 'text-stone-400'}`} />
+                      <span className="truncate text-left">{doc.filename}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-2">
+              <button onClick={createNewSession} className="w-full flex items-center justify-center px-3 py-2 bg-stone-900 text-white rounded-xl text-xs font-semibold shadow-md hover:bg-stone-800 transition-all mb-4">
+                <Plus size={14} className="mr-2" /> New Chat
               </button>
-              {documents.map(doc => (
-                <button
-                  key={doc.id}
-                  onClick={() => selectDocument(doc)}
-                  className={`w-full flex items-center px-3 py-2.5 rounded-xl text-xs transition-all ${activeDocId === doc.id
-                    ? 'bg-gradient-to-r from-teal-50 to-blue-50 text-teal-700 shadow-sm border border-teal-200 font-semibold'
-                    : 'text-stone-500 hover:bg-white hover:text-stone-700 hover:shadow-sm'
-                    }`}
-                >
-                  <FileText size={14} strokeWidth={2} className={`mr-2.5 ${activeDocId === doc.id ? 'text-teal-600' : 'text-stone-400'}`} />
-                  <span className="truncate text-left">{doc.filename}</span>
-                </button>
+              {sessions.map(session => (
+                <div key={session.id} onClick={() => { setCurrentSessionId(session.id); loadSessionMessages(session.id); }} className={`group flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-all ${currentSessionId === session.id ? 'bg-stone-100 border border-stone-200' : 'hover:bg-stone-50'}`}>
+                  <div className="flex items-center gap-2 overflow-hidden">
+                    <History size={14} className="text-stone-400" />
+                    <div className="flex flex-col">
+                      <span className={`text-xs font-medium truncate w-32 ${currentSessionId === session.id ? 'text-stone-900' : 'text-stone-600'}`}>{session.title}</span>
+                      <span className="text-[10px] text-stone-400">{new Date(session.updated_at).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                  <button onClick={(e) => deleteSession(e, session.id)} className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-50 hover:text-red-500 rounded-lg transition-all">
+                    <Trash2 size={12} />
+                  </button>
+                </div>
               ))}
             </div>
-          </div>
+          )}
         </div>
 
         <div className="p-3 border-t border-stone-200 bg-white">
-          <button
-            onClick={logout}
-            className="flex items-center w-full px-3 py-2.5 text-xs text-stone-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all font-medium"
-          >
+          <button onClick={logout} className="flex items-center w-full px-3 py-2.5 text-xs text-stone-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all font-medium">
             <LogOut size={14} strokeWidth={2} className="mr-2" /> Sign Out
           </button>
         </div>
@@ -375,7 +521,6 @@ const ChatInterface = () => {
 
       {/* Main Content */}
       <div className="flex-1 flex relative bg-gradient-to-br from-stone-50 via-white to-stone-50">
-        {/* Chat Area */}
         <div className={`flex-1 flex flex-col ${activePdf ? 'w-1/2' : 'w-full'} transition-all duration-500 ease-in-out`}>
           <div className="flex-1 overflow-y-auto p-6 space-y-6 scroll-smooth">
             {messages.length === 0 && (
@@ -385,20 +530,6 @@ const ChatInterface = () => {
                 </div>
                 <p className="text-lg font-semibold text-stone-700 mb-2">Welcome to RAG Chatbot</p>
                 <p className="text-sm text-stone-500 max-w-md text-center">Select a document, upload a PDF, or use web search to get started</p>
-                <div className="mt-8 flex gap-2">
-                  <div className="px-3 py-1.5 bg-white border border-stone-200 rounded-lg text-xs text-stone-600 shadow-sm">
-                    💬 Ask questions
-                  </div>
-                  <div className="px-3 py-1.5 bg-white border border-stone-200 rounded-lg text-xs text-stone-600 shadow-sm">
-                    📄 Upload documents
-                  </div>
-                  <div className="px-3 py-1.5 bg-white border border-stone-200 rounded-lg text-xs text-stone-600 shadow-sm">
-                    🌐 Web search
-                  </div>
-                  <div className="px-3 py-1.5 bg-white border border-stone-200 rounded-lg text-xs text-stone-600 shadow-sm">
-                    🩺 Diagnostic Mode
-                  </div>
-                </div>
               </div>
             )}
 
@@ -410,14 +541,7 @@ const ChatInterface = () => {
                   </div>
                 )}
 
-                <div
-                  className={`max-w-[85%] ${msg.role === 'user' ? 'order-1' : ''} ${msg.role === 'user'
-                      ? 'bg-gradient-to-br from-stone-900 to-stone-800 text-white rounded-2xl rounded-tr-sm shadow-lg'
-                      : msg.role === 'system'
-                        ? 'bg-stone-50 text-stone-500 text-xs border border-stone-100 w-full text-center py-2 rounded-lg'
-                        : 'bg-white text-stone-800 rounded-2xl rounded-tl-sm border border-stone-200 shadow-md hover:shadow-lg transition-shadow'
-                    }`}
-                >
+                <div className={`max-w-[85%] ${msg.role === 'user' ? 'order-1' : ''} ${msg.role === 'user' ? 'bg-gradient-to-br from-stone-900 to-stone-800 text-white rounded-2xl rounded-tr-sm shadow-lg' : msg.role === 'system' ? 'bg-stone-50 text-stone-500 text-xs border border-stone-100 w-full text-center py-2 rounded-lg' : 'bg-white text-stone-800 rounded-2xl rounded-tl-sm border border-stone-200 shadow-md hover:shadow-lg transition-shadow'}`}>
                   {msg.role === 'user' && (
                     <div className="flex items-center gap-2 px-4 pt-3 pb-2">
                       <div className="w-6 h-6 rounded-full bg-stone-700 flex items-center justify-center">
@@ -431,78 +555,11 @@ const ChatInterface = () => {
                     {msg.role === 'assistant' ? (
                       msg.isLoading ? (
                         <div className="flex items-center gap-2 text-stone-500">
-                          <div className="flex gap-1">
-                            <div className="w-2 h-2 bg-stone-400 rounded-full animate-pulse-dot" style={{ animationDelay: '0s' }}></div>
-                            <div className="w-2 h-2 bg-stone-400 rounded-full animate-pulse-dot" style={{ animationDelay: '0.2s' }}></div>
-                            <div className="w-2 h-2 bg-stone-400 rounded-full animate-pulse-dot" style={{ animationDelay: '0.4s' }}></div>
-                          </div>
                           <span className="text-sm">Thinking...</span>
                         </div>
                       ) : (
-                        <div className="prose prose-sm max-w-none prose-headings:font-semibold prose-headings:text-stone-900 prose-headings:mt-4 prose-headings:mb-2 prose-p:text-stone-700 prose-p:leading-relaxed prose-p:my-3 prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline prose-strong:text-stone-900 prose-strong:font-semibold prose-blockquote:border-l-stone-300 prose-blockquote:text-stone-600 prose-blockquote:my-4 prose-ul:my-3 prose-ol:my-3 prose-li:my-1.5 prose-hr:my-6">
-                          <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
-                            components={{
-                              code({ node, inline, className, children, ...props }) {
-                                const match = /language-(\w+)/.exec(className || '');
-                                if (!inline && match) {
-                                  // Code block (multi-line)
-                                  return (
-                                    <div className="relative my-4">
-                                      <div className="absolute top-2 right-3 text-[10px] text-stone-300 font-mono bg-stone-800/80 px-2 py-0.5 rounded z-10">
-                                        {match[1]}
-                                      </div>
-                                      <pre className="bg-stone-900 border border-stone-700 rounded-lg overflow-x-auto p-4 my-2">
-                                        <code className="text-stone-100 font-mono text-sm leading-relaxed" {...props}>
-                                          {children}
-                                        </code>
-                                      </pre>
-                                    </div>
-                                  );
-                                }
-                                // Inline code
-                                return (
-                                  <code className="bg-stone-100 text-stone-900 px-1.5 py-0.5 rounded text-xs font-mono font-semibold border border-stone-200" {...props}>
-                                    {children}
-                                  </code>
-                                );
-                              },
-                              table({ children }) {
-                                return (
-                                  <div className="overflow-x-auto my-4 rounded-lg border border-stone-200">
-                                    <table className="min-w-full divide-y divide-stone-200">
-                                      {children}
-                                    </table>
-                                  </div>
-                                );
-                              },
-                              th({ children }) {
-                                return (
-                                  <th className="px-4 py-3 bg-stone-50 text-left text-xs font-semibold text-stone-700 border-b border-stone-200">
-                                    {children}
-                                  </th>
-                                );
-                              },
-                              td({ children }) {
-                                return (
-                                  <td className="px-4 py-3 text-sm text-stone-600 border-b border-stone-100">
-                                    {children}
-                                  </td>
-                                );
-                              },
-                              h1({ children }) {
-                                return <h1 className="text-xl font-bold text-stone-900 mt-6 mb-3">{children}</h1>;
-                              },
-                              h2({ children }) {
-                                return <h2 className="text-lg font-semibold text-stone-900 mt-5 mb-2">{children}</h2>;
-                              },
-                              h3({ children }) {
-                                return <h3 className="text-base font-semibold text-stone-900 mt-4 mb-2">{children}</h3>;
-                              },
-                            }}
-                          >
-                            {msg.content}
-                          </ReactMarkdown>
+                        <div className="prose prose-sm max-w-none">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                         </div>
                       )
                     ) : (
@@ -514,53 +571,23 @@ const ChatInterface = () => {
                         <p className="text-[10px] font-bold text-stone-400 mb-2.5 uppercase tracking-widest">Sources</p>
                         <div className="flex flex-wrap gap-2">
                           {msg.citations.map((cit, cIdx) => (
-                            msg.isWebSearch ? (
-                              // Web citation with clickable URL
-                              cit.url ? (
-                                <a
-                                  key={cIdx}
-                                  href={cit.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="flex items-center px-2.5 py-1.5 bg-gradient-to-r from-blue-50 to-indigo-50 hover:from-blue-100 hover:to-indigo-100 border border-blue-200 rounded-lg text-[10px] text-blue-700 transition-all hover:border-blue-300 hover:shadow-sm group"
-                                >
-                                  <Globe size={11} className="mr-1.5 text-blue-500" />
-                                  <span className="font-medium max-w-[150px] truncate">{cit.domain || (cit.url ? new URL(cit.url).hostname : 'Unknown')}</span>
-                                  <ExternalLink size={10} className="ml-1.5 text-blue-400 group-hover:text-blue-600 transition-colors" />
-                                </a>
-                              ) : (
-                                <div
-                                  key={cIdx}
-                                  className="flex items-center px-2.5 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-[10px] text-stone-600"
-                                >
-                                  <Globe size={11} className="mr-1.5 text-stone-400" />
-                                  <span className="font-medium">{cit.domain || cit.title || 'Unknown source'}</span>
-                                </div>
-                              )
-                            ) : (
-                              // Document citation with page number
-                              <button
-                                key={cIdx}
-                                onClick={() => handleCitationClick(cit.page)}
-                                className="flex items-center px-2.5 py-1.5 bg-stone-50 hover:bg-stone-100 border border-stone-200 rounded-lg text-[10px] text-stone-600 transition-all hover:border-stone-300 hover:shadow-sm group"
-                              >
-                                <FileText size={11} className="mr-1.5 text-stone-500" />
-                                <span className="font-medium">Page {cit.page}</span>
-                                <ChevronRight size={10} className="ml-1.5 text-stone-400 group-hover:text-stone-600 transition-colors" />
-                              </button>
-                            )
+                            <button key={cIdx} onClick={() => handleCitationClick(cit.page)} className="flex items-center px-2.5 py-1.5 bg-stone-50 hover:bg-stone-100 border border-stone-200 rounded-lg text-[10px] text-stone-600 transition-all hover:border-stone-300 hover:shadow-sm group">
+                              <FileText size={11} className="mr-1.5 text-stone-500" />
+                              <span className="font-medium">Page {cit.page}</span>
+                            </button>
                           ))}
                         </div>
                       </div>
                     )}
                   </div>
+                  {msg.role === 'assistant' && !msg.isLoading && (
+                    <div className="px-4 pb-2 flex justify-end">
+                      <button onClick={() => handleSpeak(msg.content, idx)} className={`p-1.5 rounded-full hover:bg-stone-100 transition-colors ${isSpeaking === idx ? 'text-blue-500 animate-pulse' : 'text-stone-400'}`}>
+                        <Volume2 size={14} />
+                      </button>
+                    </div>
+                  )}
                 </div>
-
-                {msg.role === 'user' && (
-                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-stone-700 to-stone-800 flex items-center justify-center shadow-sm order-2">
-                    <User size={16} className="text-white" />
-                  </div>
-                )}
               </div>
             ))}
             <div ref={messagesEndRef} />
@@ -568,65 +595,25 @@ const ChatInterface = () => {
 
           <div className="p-4 bg-white/90 backdrop-blur-md border-t border-stone-200 shadow-lg">
             <div className="max-w-4xl mx-auto">
-              {webSearchMode && (
-                <div className="mb-3 flex items-center gap-2 text-xs text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200 animate-fade-in">
-                  <Globe size={14} className="animate-pulse" />
-                  <span className="font-semibold">Web Search Mode Active</span>
-                </div>
-              )}
-              {diagnosticMode && (
-                <div className="mb-3 flex items-center gap-2 text-xs text-red-600 bg-red-50 px-3 py-1.5 rounded-lg border border-red-200 animate-fade-in">
-                  <Activity size={14} className="animate-pulse" />
-                  <span className="font-semibold">Diagnostic Mode Active</span>
-                </div>
-              )}
-              <div className={`flex items-center gap-2 bg-white rounded-2xl p-2 border transition-all shadow-lg hover:shadow-xl ${webSearchMode ? 'border-blue-300 ring-2 ring-blue-100' :
-                  diagnosticMode ? 'border-red-300 ring-2 ring-red-100' :
-                    'border-stone-200 focus-within:border-stone-400 focus-within:ring-2 focus-within:ring-stone-100'
-                }`}>
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
-                  placeholder={
-                    webSearchMode ? "Search the web..." :
-                      diagnosticMode ? "Describe the symptoms (e.g., 'Motor humming')..." :
-                        "Ask a question or type your message..."
-                  }
-                  className="flex-1 bg-transparent border-none outline-none text-sm text-stone-900 px-4 py-2.5 placeholder:text-stone-400"
-                />
-                <button
-                  onClick={() => {
-                    setDiagnosticMode(!diagnosticMode);
-                    if (!diagnosticMode) setWebSearchMode(false);
-                  }}
-                  className={`p-2.5 rounded-xl transition-all ${diagnosticMode
-                    ? 'bg-gradient-to-br from-red-100 to-orange-100 text-red-600 hover:from-red-200 hover:to-orange-200 shadow-sm'
-                    : 'bg-stone-100 text-stone-500 hover:bg-stone-200'
-                    }`}
-                  title={diagnosticMode ? "Exit Diagnostic Mode" : "Enter Diagnostic Mode"}
-                >
+              {webSearchMode && <div className="mb-3 flex items-center gap-2 text-xs text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200 animate-fade-in"><Globe size={14} className="animate-pulse" /><span className="font-semibold">Web Search Mode Active</span></div>}
+              {diagnosticMode && <div className="mb-3 flex items-center gap-2 text-xs text-red-600 bg-red-50 px-3 py-1.5 rounded-lg border border-red-200 animate-fade-in"><Activity size={14} className="animate-pulse" /><span className="font-semibold">Diagnostic Mode Active</span></div>}
+
+              <div className={`flex items-center gap-2 bg-white rounded-2xl p-2 border transition-all shadow-lg hover:shadow-xl ${webSearchMode ? 'border-blue-300 ring-2 ring-blue-100' : diagnosticMode ? 'border-red-300 ring-2 ring-red-100' : 'border-stone-200 focus-within:border-stone-400 focus-within:ring-2 focus-within:ring-stone-100'}`}>
+                <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()} placeholder={webSearchMode ? "Search the web..." : diagnosticMode ? "Describe the symptoms..." : "Ask a question..."} className="flex-1 bg-transparent border-none outline-none text-sm text-stone-900 px-4 py-2.5 placeholder:text-stone-400" />
+
+                <button onClick={isRecording ? stopRecording : startRecording} className={`p-2.5 rounded-xl transition-all ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-stone-100 text-stone-500 hover:bg-stone-200'}`} title="Voice Input">
+                  {isRecording ? <StopCircle size={18} /> : <Mic size={18} />}
+                </button>
+
+                <button onClick={() => { setDiagnosticMode(!diagnosticMode); if (!diagnosticMode) setWebSearchMode(false); }} className={`p-2.5 rounded-xl transition-all ${diagnosticMode ? 'bg-gradient-to-br from-red-100 to-orange-100 text-red-600 shadow-sm' : 'bg-stone-100 text-stone-500 hover:bg-stone-200'}`} title="Diagnostic Mode">
                   <Activity size={18} strokeWidth={2} />
                 </button>
-                <button
-                  onClick={() => {
-                    setWebSearchMode(!webSearchMode);
-                    if (!webSearchMode) setDiagnosticMode(false);
-                  }}
-                  className={`p-2.5 rounded-xl transition-all ${webSearchMode
-                    ? 'bg-gradient-to-br from-blue-100 to-indigo-100 text-blue-600 hover:from-blue-200 hover:to-indigo-200 shadow-sm'
-                    : 'bg-stone-100 text-stone-500 hover:bg-stone-200'
-                    }`}
-                  title={webSearchMode ? "Switch to Document Search" : "Switch to Web Search"}
-                >
+
+                <button onClick={() => { setWebSearchMode(!webSearchMode); if (!webSearchMode) setDiagnosticMode(false); }} className={`p-2.5 rounded-xl transition-all ${webSearchMode ? 'bg-gradient-to-br from-blue-100 to-indigo-100 text-blue-600 shadow-sm' : 'bg-stone-100 text-stone-500 hover:bg-stone-200'}`} title="Web Search">
                   <Globe size={18} strokeWidth={2} />
                 </button>
-                <button
-                  onClick={handleSend}
-                  disabled={!input.trim()}
-                  className="p-2.5 bg-gradient-to-br from-stone-900 to-stone-800 hover:from-stone-800 hover:to-stone-700 text-white rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed shadow-md hover:shadow-lg disabled:hover:shadow-md"
-                >
+
+                <button onClick={handleSend} disabled={!input.trim()} className="p-2.5 bg-gradient-to-br from-stone-900 to-stone-800 hover:from-stone-800 hover:to-stone-700 text-white rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed shadow-md hover:shadow-lg">
                   <Send size={18} strokeWidth={2} />
                 </button>
               </div>
@@ -635,7 +622,6 @@ const ChatInterface = () => {
           </div>
         </div>
 
-        {/* PDF Viewer Panel */}
         {activePdf && (
           <div className="w-1/2 border-l border-stone-200 bg-stone-50 flex flex-col shadow-xl z-10">
             <div className="p-3 border-b border-stone-200 flex justify-between items-center bg-white">
@@ -645,10 +631,7 @@ const ChatInterface = () => {
                 </div>
                 <span className="text-xs font-semibold text-stone-700 truncate">{activePdf.name}</span>
               </div>
-              <button
-                onClick={() => setActivePdf(null)}
-                className="p-1.5 hover:bg-stone-100 rounded-full text-stone-400 hover:text-stone-600 transition-colors"
-              >
+              <button onClick={() => setActivePdf(null)} className="p-1.5 hover:bg-stone-100 rounded-full text-stone-400 hover:text-stone-600 transition-colors">
                 <X size={16} />
               </button>
             </div>
